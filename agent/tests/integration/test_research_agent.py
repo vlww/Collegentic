@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Live integration test for the College Research Agent.
+"""Live integration test for the College Research Agent in isolation.
 
 Per .agents-cli-spec.md's testing rules, this asserts on *plumbing*, not on
 research quality/content (that belongs in agents-cli eval, Milestone 15):
@@ -20,6 +20,12 @@ that a real `google_search`-backed run produces non-trivial output, that
 the source-collection callback populates session state from real grounding
 metadata, and that the activity-logging callbacks write a completed
 AgentRun doc to Firestore.
+
+Runs `college_research_agent` directly rather than via `app.agent.root_agent`
+(the full research_and_requirements_pipeline, Milestone 4+) — that keeps
+this test scoped to the research agent and cheap, independent of how many
+more stages the pipeline grows. The full chain has its own integration test
+in test_requirements_agent.py.
 """
 
 import uuid
@@ -27,13 +33,13 @@ import uuid
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
-from app.agent import root_agent
+from app.sub_agents.research_agent import college_research_agent
 from app.tools import firestore_tools as ft
 
 
 def test_research_agent_produces_findings_and_collects_sources() -> None:
     user_id = f"test-{uuid.uuid4()}"
-    runner = InMemoryRunner(agent=root_agent, app_name="test")
+    runner = InMemoryRunner(agent=college_research_agent, app_name="test")
     session = runner.session_service.create_session_sync(
         user_id=user_id, app_name="test"
     )
