@@ -1,0 +1,23 @@
+# Node / frontend
+**/node_modules
+frontend/dist
+npm-debug.log*
+
+# Python / agent (agent/ also has its own, kept for defense in depth)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environments — never commit secrets
+.env
+.env.local
+!.env.example
+
+# Editors / OS
+.DS_Store
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/

@@ -1,0 +1,152 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Collegentic design tokens: navy is the dominant structural color
+ * (sidebar, headers, large surfaces); orange is reserved for actions,
+ * priority/urgency signals, and small highlights. See section 4 of
+ * .agents-cli-spec.md — deliberately not a generic "AI SaaS" palette.
+ */
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-navy: var(--navy);
+  --color-navy-foreground: var(--navy-foreground);
+  --color-orange: var(--orange);
+  --color-orange-foreground: var(--orange-foreground);
+  --color-orange-tint: var(--orange-tint);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.5rem;
+
+  --background: #F6F7FA;
+  --foreground: #0B1F3A;
+  --card: #FFFFFF;
+  --card-foreground: #0B1F3A;
+  --popover: #FFFFFF;
+  --popover-foreground: #0B1F3A;
+
+  /* Primary = the orange action color. Used sparingly: CTAs, active state,
+     priority badges — not backgrounds. */
+  --primary: #DD7A16;
+  --primary-foreground: #FFFFFF;
+
+  --secondary: #EBEEF3;
+  --secondary-foreground: #0B1F3A;
+  --muted: #EBEEF3;
+  --muted-foreground: #5B6B82;
+  --accent: #FCEBD6;
+  --accent-foreground: #7A3E0B;
+  --destructive: #C22A2A;
+  --border: #DDE3EC;
+  --input: #DDE3EC;
+  --ring: #DD7A16;
+
+  --success: #1E7A4C;
+  --success-foreground: #FFFFFF;
+  --warning: #B8790A;
+  --warning-foreground: #FFFFFF;
+
+  --navy: #0B1F3A;
+  --navy-foreground: #FFFFFF;
+  --orange: #DD7A16;
+  --orange-foreground: #FFFFFF;
+  --orange-tint: #FCEBD6;
+
+  /* Sidebar/header chrome stays navy in both themes — the structural anchor. */
+  --sidebar: #0B1F3A;
+  --sidebar-foreground: #E7ECF3;
+  --sidebar-primary: #DD7A16;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #13294B;
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #1D3860;
+  --sidebar-ring: #DD7A16;
+}
+
+.dark {
+  --background: #0B1626;
+  --foreground: #E7ECF3;
+  --card: #101F35;
+  --card-foreground: #E7ECF3;
+  --popover: #101F35;
+  --popover-foreground: #E7ECF3;
+
+  --primary: #E8871E;
+  --primary-foreground: #14100A;
+
+  --secondary: #16283F;
+  --secondary-foreground: #E7ECF3;
+  --muted: #16283F;
+  --muted-foreground: #8FA0B8;
+  --accent: #2A2013;
+  --accent-foreground: #F3A34B;
+  --destructive: #E15656;
+  --border: #1D3860;
+  --input: #1D3860;
+  --ring: #E8871E;
+
+  --success: #3FA873;
+  --success-foreground: #05170F;
+  --warning: #E0A83A;
+  --warning-foreground: #241A02;
+
+  --navy: #0B1626;
+  --navy-foreground: #E7ECF3;
+  --orange: #E8871E;
+  --orange-foreground: #14100A;
+  --orange-tint: #2A2013;
+
+  --sidebar: #060F1F;
+  --sidebar-foreground: #E7ECF3;
+  --sidebar-primary: #E8871E;
+  --sidebar-primary-foreground: #14100A;
+  --sidebar-accent: #101F35;
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #1D3860;
+  --sidebar-ring: #E8871E;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
