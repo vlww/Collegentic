@@ -52,6 +52,7 @@ from google.adk.tools.agent_tool import AgentTool
 from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
 from app.sub_agents.college_intake_agent import college_intake_agent
+from app.sub_agents.conflict_agent import conflict_pipeline
 from app.sub_agents.priority_agent import priority_pipeline
 from app.sub_agents.readiness_agent import readiness_pipeline
 from app.sub_agents.requirements_agent import requirements_pipeline
@@ -63,15 +64,16 @@ college_intake_pipeline = SequentialAgent(
     name="college_intake_pipeline",
     description=(
         "Researches and extracts structured, sourced requirements for "
-        "newly requested colleges, plans tasks from the full requirement "
-        "set across every tracked college, scores and explains each task's "
-        "priority, then scores and explains every tracked college's "
-        "application readiness."
+        "newly requested colleges, detects cross-college conflicts, plans "
+        "tasks from the full requirement set across every tracked college, "
+        "scores and explains each task's priority, then scores and "
+        "explains every tracked college's application readiness."
     ),
     sub_agents=[
         college_intake_agent,
         college_research_agent,
         requirements_pipeline,
+        conflict_pipeline,
         task_planning_pipeline,
         priority_pipeline,
         readiness_pipeline,
@@ -136,7 +138,10 @@ YOUR STEPS, IN ORDER:
    requirement, etc.), and roughly how many tasks were planned — translate
    all of it into plain sentences, never paste raw JSON or internal field
    names. If anything came back flagged for verification, say so plainly
-   rather than glossing over it.
+   rather than glossing over it. If any cross-college conflicts were
+   detected (see CONFLICTS below), mention the genuinely important ones —
+   a real recommendation gap or deadline clustering the student should
+   know about — in plain language.
 
 If the student's message names zero colleges, ask them which colleges
 they're applying to — do not call any tools yet. If every college they
@@ -146,6 +151,7 @@ calling `college_intake_pipeline` (there's nothing new to research).
 FULL PIPELINE CONTEXT (populated only after college_intake_pipeline
 returns — empty before that, ignore it until then):
 RESEARCH FINDINGS: {raw_research_findings?}
+CONFLICTS: {detected_conflicts?}
 PLANNED TASKS: {planned_tasks?}
 READINESS: {college_readiness_context?}"""
 

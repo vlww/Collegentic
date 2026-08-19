@@ -120,7 +120,7 @@ def _deadline_urgency_fraction(days_until: int | None) -> float:
     return _clamp(1 - days_until / _DEADLINE_URGENCY_HORIZON_DAYS, 0.0, 1.0)
 
 
-def _earliest_college_deadline(
+def earliest_college_deadline(
     college_deadlines: CollegeDeadlines | None,
 ) -> datetime | None:
     if college_deadlines is None:
@@ -158,7 +158,7 @@ def resolve_effective_deadline(
     """
     if task_deadline is not None:
         return task_deadline
-    return _earliest_college_deadline(college_deadlines)
+    return earliest_college_deadline(college_deadlines)
 
 
 def compute_priority_score(
@@ -364,7 +364,7 @@ def compute_readiness_score(
         + _MISC_REQUIREMENTS_WEIGHT * misc_requirements
     )
 
-    nearest_deadline = _earliest_college_deadline(college_deadlines)
+    nearest_deadline = earliest_college_deadline(college_deadlines)
     days_until_deadline: int | None = None
     if nearest_deadline is not None:
         days_until_deadline = (nearest_deadline - now).days

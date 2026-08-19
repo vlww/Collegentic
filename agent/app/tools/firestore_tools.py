@@ -49,6 +49,7 @@ from app.schemas import (
     AgentRunStatus,
     College,
     Conflict,
+    ConflictStatus,
     EssayMatch,
     EssayPrompt,
     FirestoreModel,
@@ -385,6 +386,16 @@ def get_conflicts(user_id: str) -> list[Conflict]:
 
 def save_conflicts(user_id: str, conflicts: list[Conflict]) -> list[str]:
     return _batch_upsert(conflicts, lambda _c: _conflicts(user_id))
+
+
+def update_conflict_status(
+    user_id: str, conflict_id: str, status: ConflictStatus
+) -> None:
+    """Powers both the student's Acknowledge/Resolve actions (app/api.py) and
+    the Conflict Agent's own auto-resolve-if-no-longer-detected step
+    (app/sub_agents/conflict_agent.py) — never reopens a conflict, only ever
+    moves it toward acknowledged/resolved."""
+    _conflicts(user_id).document(conflict_id).update({"status": status.value})
 
 
 # --- Agent activity ---------------------------------------------------------

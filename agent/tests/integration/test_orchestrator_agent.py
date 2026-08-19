@@ -44,7 +44,7 @@ def user_id():
         for req in ft._read_all(ft._requirements(uid, college.id), Requirement):
             ft._requirements(uid, college.id).document(req.id).delete()
         ft._colleges(uid).document(college.id).delete()
-    for coll_fn in (ft._research_sources, ft._agent_runs, ft._tasks):
+    for coll_fn in (ft._research_sources, ft._agent_runs, ft._tasks, ft._conflicts):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
 
@@ -95,12 +95,18 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
     assert refreshed_college.readiness.explanation != ""
     assert refreshed_college.readiness.computed_at is not None
 
+    # A single tracked college can never produce a real cross-college
+    # conflict — guaranteed by _persist_conflicts's own id validation,
+    # independent of what the LLM decides (see conflict_agent.py).
+    assert ft.get_conflicts(user_id) == []
+
     runs = ft.get_agent_runs(user_id)
     agent_names = {run.agent_name for run in runs}
     assert {
         "orchestrator_agent",
         "college_research_agent",
         "requirements_agent",
+        "conflict_detection_agent",
         "task_planning_agent",
         "priority_explanation_agent",
         "readiness_explanation_agent",

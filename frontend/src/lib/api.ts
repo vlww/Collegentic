@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import type { College, Requirement, ResearchSource, Task } from "./types";
+import type { College, Conflict, Requirement, ResearchSource, Task } from "./types";
 
 /**
  * userId is a client-generated UUID persisted in localStorage — there is no
@@ -114,6 +114,18 @@ export function updateRequirementProgress(
 export function getResearchSources(sourceIds: string[]): Promise<ResearchSource[]> {
   if (sourceIds.length === 0) return Promise.resolve([]);
   return apiFetch(`/api/research-sources?ids=${sourceIds.join(",")}`);
+}
+
+export function getConflicts(): Promise<Conflict[]> {
+  return apiFetch("/api/conflicts");
+}
+
+export function acknowledgeConflict(conflictId: string): Promise<void> {
+  return apiFetch(`/api/conflicts/${conflictId}/acknowledge`, { method: "POST" });
+}
+
+export function resolveConflict(conflictId: string): Promise<void> {
+  return apiFetch(`/api/conflicts/${conflictId}/resolve`, { method: "POST" });
 }
 
 export function sendOrchestratorMessage(message: string): Promise<{ reply: string }> {

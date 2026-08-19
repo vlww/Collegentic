@@ -102,3 +102,25 @@ export interface Task {
   createdBy: "agent" | "user";
   createdAt: string | null;
 }
+
+export type ConflictType =
+  | "recommendation"
+  | "essay"
+  | "deadline"
+  | "testing"
+  | "financialAid";
+
+export type ConflictSeverity = "low" | "medium" | "high";
+
+export type ConflictStatus = "open" | "acknowledged" | "resolved";
+
+export interface Conflict {
+  id: string;
+  type: ConflictType;
+  collegeIds: string[];
+  description: string;
+  recommendation: string;
+  severity: ConflictSeverity;
+  relatedRequirementIds: string[];
+  status: ConflictStatus;
+}

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { CollegeTable } from "@/components/collegentic/CollegeTable";
 import { TodaysPriorities } from "@/components/collegentic/TodaysPriorities";
+import { ConflictAlerts } from "@/components/collegentic/ConflictAlerts";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { getColleges, getRequirements } from "@/lib/api";
@@ -29,6 +30,11 @@ export function Dashboard() {
     (requirementsByCollege[requirement.collegeId] ??= []).push(requirement);
   }
 
+  const collegeNameById = useMemo(
+    () => Object.fromEntries((colleges ?? []).map((c) => [c.id, c.name])),
+    [colleges]
+  );
+
   return (
     <div>
       <PageHeader
@@ -36,8 +42,11 @@ export function Dashboard() {
         description="Today's Priorities and the full college application matrix — what's going on with all of your applications, at a glance."
       />
 
-      <div className="mb-6">
+      <div className="mb-6 space-y-6">
         <TodaysPriorities />
+        {colleges !== null && colleges.length > 0 && (
+          <ConflictAlerts collegeName={(id) => collegeNameById[id] ?? id} />
+        )}
       </div>
 
       {error && (

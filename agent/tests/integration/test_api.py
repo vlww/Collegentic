@@ -32,7 +32,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import router as api_router
-from app.schemas import College, ConfidenceLevel, Requirement, ResearchSource, Task
+from app.schemas import (
+    College,
+    ConfidenceLevel,
+    Conflict,
+    Requirement,
+    ResearchSource,
+    Task,
+)
 from app.tools import firestore_tools as ft
 
 
@@ -51,7 +58,7 @@ def user_id():
         for req in ft._read_all(ft._requirements(uid, college.id), Requirement):
             ft._requirements(uid, college.id).document(req.id).delete()
         ft._colleges(uid).document(college.id).delete()
-    for coll_fn in (ft._research_sources, ft._tasks):
+    for coll_fn in (ft._research_sources, ft._tasks, ft._conflicts):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
 
@@ -229,6 +236,52 @@ def test_recompute_readiness_refreshes_score_and_explanation_together(
     assert result[0]["readiness"]["score"] > 0
     assert result[0]["readiness"]["explanation"] != ""
     assert result[0]["readiness"]["computedAt"] is not None
+
+
+def test_list_conflicts(client: TestClient, user_id: str) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    other_college_id = ft.save_college(user_id, College(name="Baylor University"))
+    ft.save_conflicts(
+        user_id,
+        [
+            Conflict(
+                type="recommendation",
+                college_ids=[college_id, other_college_id],
+                description="Both colleges need a recommender but none is identified.",
+                recommendation="Ask a teacher soon.",
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.get("/conflicts", headers=headers).json()
+    assert len(result) == 1
+    assert result[0]["status"] == "open"
+
+
+def test_acknowledge_and_resolve_conflict(client: TestClient, user_id: str) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    other_college_id = ft.save_college(user_id, College(name="Baylor University"))
+    [conflict_id] = ft.save_conflicts(
+        user_id,
+        [
+            Conflict(
+                type="deadline",
+                college_ids=[college_id, other_college_id],
+                description="Deadlines cluster within days of each other.",
+                recommendation="Start early.",
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    res = client.post(f"/conflicts/{conflict_id}/acknowledge", headers=headers)
+    assert res.status_code == 200
+    assert ft.get_conflicts(user_id)[0].status.value == "acknowledged"
+
+    res = client.post(f"/conflicts/{conflict_id}/resolve", headers=headers)
+    assert res.status_code == 200
+    assert ft.get_conflicts(user_id)[0].status.value == "resolved"
 
 
 def test_recompute_priorities_refreshes_score_and_explanation_together(

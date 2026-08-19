@@ -41,7 +41,13 @@ from google.genai import types
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from app.schemas import Readiness, ReadinessBreakdown, RequirementStatus, TaskStatus
+from app.schemas import (
+    ConflictStatus,
+    Readiness,
+    ReadinessBreakdown,
+    RequirementStatus,
+    TaskStatus,
+)
 from app.tools import firestore_tools as ft
 from app.tools.scoring import (
     compute_priority_score,
@@ -223,6 +229,34 @@ def recompute_readiness(user_id: str = Depends(require_user_id)) -> list[dict]:
         college.model_dump(mode="json", by_alias=True)
         for college in ft.get_tracked_colleges(user_id)
     ]
+
+
+@router.get("/conflicts")
+def list_conflicts(user_id: str = Depends(require_user_id)) -> list[dict]:
+    return [
+        conflict.model_dump(mode="json", by_alias=True)
+        for conflict in ft.get_conflicts(user_id)
+    ]
+
+
+@router.post("/conflicts/{conflict_id}/acknowledge")
+def acknowledge_conflict(
+    conflict_id: str, user_id: str = Depends(require_user_id)
+) -> dict:
+    """The student has seen this conflict and is handling it themselves —
+    keeps it visible (not resolved) but out of an "unseen" filter, if the
+    frontend adds one later."""
+    ft.update_conflict_status(user_id, conflict_id, ConflictStatus.ACKNOWLEDGED)
+    return {"status": "ok"}
+
+
+@router.post("/conflicts/{conflict_id}/resolve")
+def resolve_conflict(conflict_id: str, user_id: str = Depends(require_user_id)) -> dict:
+    """The student has dealt with this conflict. A future conflict_agent run
+    won't reopen it even if it re-detects the same underlying facts — see
+    app/sub_agents/conflict_agent.py's fingerprint-merge docstring."""
+    ft.update_conflict_status(user_id, conflict_id, ConflictStatus.RESOLVED)
+    return {"status": "ok"}
 
 
 @router.get("/research-sources")

@@ -62,6 +62,7 @@ def test_intake_pipeline_stage_order() -> None:
         "college_intake_agent",
         "college_research_agent",
         "requirements_pipeline",
+        "conflict_pipeline",
         "task_planning_pipeline",
         "priority_pipeline",
         "readiness_pipeline",
