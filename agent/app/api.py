@@ -85,6 +85,14 @@ def list_requirements(
     return [req.model_dump(mode="json", by_alias=True) for req in requirements]
 
 
+@router.get("/tasks")
+def list_tasks(
+    college_id: str | None = None, user_id: str = Depends(require_user_id)
+) -> list[dict]:
+    tasks = ft.get_tasks(user_id, college_id)
+    return [task.model_dump(mode="json", by_alias=True) for task in tasks]
+
+
 @router.get("/research-sources")
 def list_research_sources(
     ids: str, user_id: str = Depends(require_user_id)

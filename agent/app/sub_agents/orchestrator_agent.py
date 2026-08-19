@@ -54,15 +54,22 @@ from app.config import config
 from app.sub_agents.college_intake_agent import college_intake_agent
 from app.sub_agents.requirements_agent import requirements_pipeline
 from app.sub_agents.research_agent import college_research_agent
+from app.sub_agents.task_planning_agent import task_planning_pipeline
 from app.tools import firestore_tools as ft
 
 college_intake_pipeline = SequentialAgent(
     name="college_intake_pipeline",
     description=(
         "Researches and extracts structured, sourced requirements for "
-        "newly requested colleges."
+        "newly requested colleges, then plans tasks from the full "
+        "requirement set across every tracked college."
     ),
-    sub_agents=[college_intake_agent, college_research_agent, requirements_pipeline],
+    sub_agents=[
+        college_intake_agent,
+        college_research_agent,
+        requirements_pipeline,
+        task_planning_pipeline,
+    ],
 )
 
 
@@ -111,20 +118,29 @@ YOUR STEPS, IN ORDER:
    rather than guessing).
 2. Call `record_requested_colleges` with that list.
 3. Call `college_intake_pipeline` (pass a short one-line request string,
-   e.g. "Research and track these colleges.") to research and extract
-   requirements for any newly added colleges. This runs real web research
-   and can take a while — that's expected, do not treat it as an error.
+   e.g. "Research and track these colleges.") to research, extract
+   requirements, and plan tasks for any newly added colleges. This runs
+   real web research and can take a while — that's expected, do not treat
+   it as an error. The tool's own return value is just the final planned
+   task list (JSON) — for a richer summary, the full pipeline's state is
+   available below once the call completes.
 4. Once it returns, write a SHORT, friendly, plain-language summary for the
-   student: how many colleges were researched, and 1-2 genuinely notable
-   things you found for each (a hard deadline, an unusual recommendation
-   requirement, etc.) — translate the result, never paste raw JSON or
-   internal field names. If anything came back flagged for verification,
-   say so plainly rather than glossing over it.
+   student: how many colleges were researched, 1-2 genuinely notable
+   things you found per college (a hard deadline, an unusual recommendation
+   requirement, etc.), and roughly how many tasks were planned — translate
+   all of it into plain sentences, never paste raw JSON or internal field
+   names. If anything came back flagged for verification, say so plainly
+   rather than glossing over it.
 
 If the student's message names zero colleges, ask them which colleges
 they're applying to — do not call any tools yet. If every college they
 named is already tracked, say so via `get_tracked_colleges` and skip
-calling `college_intake_pipeline` (there's nothing new to research)."""
+calling `college_intake_pipeline` (there's nothing new to research).
+
+FULL PIPELINE CONTEXT (populated only after college_intake_pipeline
+returns — empty before that, ignore it until then):
+RESEARCH FINDINGS: {raw_research_findings?}
+PLANNED TASKS: {planned_tasks?}"""
 
 
 orchestrator_agent = LlmAgent(

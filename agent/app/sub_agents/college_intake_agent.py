@@ -40,6 +40,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.schemas import College
 from app.tools import firestore_tools as ft
 
@@ -48,7 +49,11 @@ logger = logging.getLogger(__name__)
 
 class CollegeIntakeAgent(BaseAgent):
     def __init__(self, name: str = "college_intake_agent"):
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            before_agent_callback=log_agent_run_start,
+            after_agent_callback=log_agent_run_complete,
+        )
 
     async def _run_async_impl(
         self, ctx: InvocationContext

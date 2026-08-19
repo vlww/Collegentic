@@ -32,7 +32,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import router as api_router
-from app.schemas import College, ConfidenceLevel, Requirement, ResearchSource
+from app.schemas import College, ConfidenceLevel, Requirement, ResearchSource, Task
 from app.tools import firestore_tools as ft
 
 
@@ -51,8 +51,9 @@ def user_id():
         for req in ft._read_all(ft._requirements(uid, college.id), Requirement):
             ft._requirements(uid, college.id).document(req.id).delete()
         ft._colleges(uid).document(college.id).delete()
-    for doc in ft._research_sources(uid).stream():
-        doc.reference.delete()
+    for coll_fn in (ft._research_sources, ft._tasks):
+        for doc in coll_fn(uid).stream():
+            doc.reference.delete()
 
 
 def test_missing_user_id_header_returns_400(client: TestClient) -> None:
@@ -119,3 +120,29 @@ def test_full_read_flow(client: TestClient, user_id: str) -> None:
     sources = client.get(f"/research-sources?ids={source_id}", headers=headers).json()
     assert len(sources) == 1
     assert sources[0]["official"] is True
+
+
+def test_list_tasks(client: TestClient, user_id: str) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    other_college_id = ft.save_college(user_id, College(name="Baylor University"))
+    ft.save_tasks(
+        user_id,
+        [
+            Task(
+                title="Draft essay", college_id=college_id, source_requirement_id="r1"
+            ),
+            Task(
+                title="Submit FAFSA",
+                college_id=other_college_id,
+                source_requirement_id="r2",
+            ),
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    all_tasks = client.get("/tasks", headers=headers).json()
+    assert len(all_tasks) == 2
+
+    scoped = client.get(f"/tasks?college_id={college_id}", headers=headers).json()
+    assert len(scoped) == 1
+    assert scoped[0]["title"] == "Draft essay"

@@ -82,3 +82,22 @@ export interface ResearchSource {
   confidence: ConfidenceLevel;
   excerpt: string | null;
 }
+
+export type TaskStatus = "NotStarted" | "InProgress" | "Blocked" | "Done";
+
+export interface Task {
+  id: string;
+  title: string;
+  description: string | null;
+  collegeId: string | null;
+  category: string | null;
+  deadline: string | null;
+  estimatedMinutes: number | null;
+  status: TaskStatus;
+  priorityScore: number;
+  priorityExplanation: string;
+  dependencies: string[];
+  sourceRequirementId: string | null;
+  createdBy: "agent" | "user";
+  createdAt: string | null;
+}

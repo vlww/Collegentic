@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Live end-to-end test of the full Milestone 3-4 chain,
+"""Live end-to-end test of the full Milestone 3-4-7 chain,
 college_intake_pipeline (college_intake_agent -> college_research_agent ->
-requirements_pipeline), researching one real college and persisting
-structured, sourced requirements to Firestore.
+requirements_pipeline -> task_planning_pipeline), researching one real
+college and persisting structured, sourced requirements and planned tasks
+to Firestore.
 
 Drives college_intake_pipeline directly (pre-seeding `requested_colleges`
 in state) rather than through orchestrator_agent/root_agent — since
@@ -49,7 +50,7 @@ def user_id():
         for req in ft._read_all(ft._requirements(uid, college.id), Requirement):
             ft._requirements(uid, college.id).document(req.id).delete()
         ft._colleges(uid).document(college.id).delete()
-    for coll_fn in (ft._research_sources, ft._agent_runs):
+    for coll_fn in (ft._research_sources, ft._agent_runs, ft._tasks):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
 
@@ -94,9 +95,17 @@ def test_full_pipeline_researches_and_persists_requirements(user_id: str) -> Non
     assert len(sources) > 0
     assert all(source.url.startswith("http") for source in sources)
 
+    tasks = ft.get_tasks(user_id, college.id)
+    assert len(tasks) > 0
+    assert all(task.source_requirement_id for task in tasks)
+    # One task per requirement, never more — see task_planning_agent.py's
+    # instruction ("never split one requirement into multiple tasks").
+    assert len({task.source_requirement_id for task in tasks}) == len(tasks)
+
     runs = ft.get_agent_runs(user_id)
     agent_names = {run.agent_name for run in runs}
     assert "college_research_agent" in agent_names
     assert "findings_evaluator" in agent_names
     assert "requirements_agent" in agent_names
+    assert "task_planning_agent" in agent_names
     assert all(run.status.value == "completed" for run in runs)

@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import type { College, Requirement, ResearchSource } from "./types";
+import type { College, Requirement, ResearchSource, Task } from "./types";
 
 /**
  * userId is a client-generated UUID persisted in localStorage — there is no
@@ -71,6 +71,11 @@ export function getCollege(collegeId: string): Promise<College> {
 export function getRequirements(collegeIds?: string[]): Promise<Requirement[]> {
   const query = collegeIds?.length ? `?college_ids=${collegeIds.join(",")}` : "";
   return apiFetch(`/api/requirements${query}`);
+}
+
+export function getTasks(collegeId?: string): Promise<Task[]> {
+  const query = collegeId ? `?college_id=${collegeId}` : "";
+  return apiFetch(`/api/tasks${query}`);
 }
 
 export function getResearchSources(sourceIds: string[]): Promise<ResearchSource[]> {

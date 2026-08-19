@@ -44,7 +44,7 @@ def user_id():
         for req in ft._read_all(ft._requirements(uid, college.id), Requirement):
             ft._requirements(uid, college.id).document(req.id).delete()
         ft._colleges(uid).document(college.id).delete()
-    for coll_fn in (ft._research_sources, ft._agent_runs):
+    for coll_fn in (ft._research_sources, ft._agent_runs, ft._tasks):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
 
@@ -77,6 +77,7 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
     assert len(final_text) > 20
     assert "extracted_requirements" not in final_text
     assert "college_name_to_id" not in final_text
+    assert "planned_tasks" not in final_text
     assert not final_text.strip().startswith("{")
 
     colleges = ft.get_tracked_colleges(user_id)
@@ -86,12 +87,16 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
     requirements = ft.get_requirements(user_id, [colleges[0].id])
     assert len(requirements) > 0
 
+    tasks = ft.get_tasks(user_id, colleges[0].id)
+    assert len(tasks) > 0
+
     runs = ft.get_agent_runs(user_id)
     agent_names = {run.agent_name for run in runs}
     assert {
         "orchestrator_agent",
         "college_research_agent",
         "requirements_agent",
+        "task_planning_agent",
     } <= agent_names
 
     pipeline_run_ids = {run.pipeline_run_id for run in runs}
