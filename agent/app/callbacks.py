@@ -50,9 +50,15 @@ logger = logging.getLogger(__name__)
 
 def log_agent_run_start(callback_context: CallbackContext) -> None:
     agent_name = callback_context.agent_name
-    pipeline_run_id = (
-        callback_context.state.get("pipeline_run_id") or callback_context.session.id
-    )
+    # Written back to state (not just read with a fallback): AgentTool spins
+    # up a *new* child session per call, seeded from a copy of the caller's
+    # state — so the Orchestrator's before_agent_callback must persist this
+    # key for every downstream sub-agent (running in that child session) to
+    # inherit the same grouping id, rather than each minting its own.
+    pipeline_run_id = callback_context.state.get("pipeline_run_id")
+    if not pipeline_run_id:
+        pipeline_run_id = callback_context.session.id
+        callback_context.state["pipeline_run_id"] = pipeline_run_id
     try:
         run_id = ft.start_agent_run(
             callback_context.user_id,

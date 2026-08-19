@@ -12,16 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Live end-to-end test of the full Milestone 4 chain: root_agent
-(college_intake_agent -> college_research_agent -> requirements_pipeline)
-researching one real college and persisting structured, sourced
-requirements to Firestore.
+"""Live end-to-end test of the full Milestone 3-4 chain,
+college_intake_pipeline (college_intake_agent -> college_research_agent ->
+requirements_pipeline), researching one real college and persisting
+structured, sourced requirements to Firestore.
+
+Drives college_intake_pipeline directly (pre-seeding `requested_colleges`
+in state) rather than through orchestrator_agent/root_agent — since
+Milestone 5, root_agent is the LLM-driven Orchestrator, which parses that
+list from a natural-language message itself; that parsing behavior has its
+own test in test_orchestrator_agent.py. This test's job is narrower and
+unaffected by how the list gets populated: does the intake pipeline itself
+write correct, linked Firestore records end to end.
 
 Scoped to a single college to keep this reasonably fast/cheap — per-agent
 behavior already has its own focused tests (test_college_intake_agent.py,
-test_research_agent.py, test_requirements_agent_config.py). This test
-exists to prove the chain as a whole actually writes correct, linked
-Firestore records, which no smaller test can verify on its own.
+test_research_agent.py, test_requirements_agent_config.py).
 """
 
 import asyncio
@@ -51,10 +57,10 @@ def user_id():
 def test_full_pipeline_researches_and_persists_requirements(user_id: str) -> None:
     # Imported inside the test, not at module level, so importing this file
     # doesn't pull in every future pipeline stage for tests that don't need it.
-    from app.agent import root_agent
+    from app.sub_agents.orchestrator_agent import college_intake_pipeline
 
     async def _go() -> None:
-        runner = InMemoryRunner(agent=root_agent, app_name="test")
+        runner = InMemoryRunner(agent=college_intake_pipeline, app_name="test")
         session = await runner.session_service.create_session(
             app_name="test",
             user_id=user_id,
