@@ -40,7 +40,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from google.genai import types
 from pydantic import BaseModel
 
+from app.schemas import TaskStatus
 from app.tools import firestore_tools as ft
+from app.tools.scoring import compute_priority_score, resolve_effective_deadline
 
 # No "/api" prefix here: the frontend's Vite dev proxy (and, per the plan,
 # Cloud Run's static-serving setup later) strips a leading "/api" from every
@@ -91,6 +93,49 @@ def list_tasks(
 ) -> list[dict]:
     tasks = ft.get_tasks(user_id, college_id)
     return [task.model_dump(mode="json", by_alias=True) for task in tasks]
+
+
+@router.post("/priorities/recompute")
+def recompute_priorities(user_id: str = Depends(require_user_id)) -> list[dict]:
+    """Refreshes every non-Done task's priority score AND explanation,
+    deterministically — no LLM call (app/tools/scoring.py). Deadlines march
+    forward daily even when no new college research happens, so the full
+    agent pipeline (app/sub_agents/priority_agent.py, which additionally
+    rewrites the explanation as a nicer LLM sentence) isn't the only way
+    scores get refreshed.
+
+    Overwrites the explanation with the freshly-computed `explanation_facts`
+    (plain but 100% accurate), rather than preserving whatever sentence was
+    last written — found live (Milestone 8): leaving the old LLM sentence in
+    place while the score moved on produced a self-contradicting result (a
+    task the badge now read as "Medium priority" whose own explanation text
+    still said "score of 34.0", because that sentence had literally baked in
+    the pre-recompute number). A plain, current sentence beats a polished,
+    wrong one.
+    """
+    tasks = [task for task in ft.get_tasks(user_id) if task.status != TaskStatus.DONE]
+    colleges_by_id = {
+        college.id: college for college in ft.get_tracked_colleges(user_id)
+    }
+    for task in tasks:
+        college = colleges_by_id.get(task.college_id) if task.college_id else None
+        effective_deadline = resolve_effective_deadline(
+            task.deadline, college.deadlines if college else None
+        )
+        breakdown = compute_priority_score(
+            deadline=effective_deadline,
+            estimated_minutes=task.estimated_minutes,
+            required=task.required,
+            status=task.status.value,
+            has_dependencies=bool(task.dependencies),
+            category=task.category,
+        )
+        ft.update_task_priority(
+            user_id, task.id, breakdown.score, breakdown.explanation_facts
+        )
+    return [
+        task.model_dump(mode="json", by_alias=True) for task in ft.get_tasks(user_id)
+    ]
 
 
 @router.get("/research-sources")

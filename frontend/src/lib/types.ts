@@ -93,6 +93,7 @@ export interface Task {
   category: string | null;
   deadline: string | null;
   estimatedMinutes: number | null;
+  required: boolean;
   status: TaskStatus;
   priorityScore: number;
   priorityExplanation: string;

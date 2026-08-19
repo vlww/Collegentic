@@ -78,6 +78,12 @@ export function getTasks(collegeId?: string): Promise<Task[]> {
   return apiFetch(`/api/tasks${query}`);
 }
 
+/** Refreshes priority scores only (no LLM call) — see app/api.py's
+ * recompute_priorities for why this exists alongside the full agent pipeline. */
+export function recomputePriorities(): Promise<Task[]> {
+  return apiFetch("/api/priorities/recompute", { method: "POST" });
+}
+
 export function getResearchSources(sourceIds: string[]): Promise<ResearchSource[]> {
   if (sourceIds.length === 0) return Promise.resolve([]);
   return apiFetch(`/api/research-sources?ids=${sourceIds.join(",")}`);

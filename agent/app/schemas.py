@@ -304,6 +304,10 @@ class Task(FirestoreModel):
     category: str | None = None
     deadline: datetime | None = None
     estimated_minutes: int | None = None
+    # Denormalized from the source Requirement at creation time (not looked
+    # up at scoring time) — Milestone 8's priority formula needs it and
+    # scoring.py deliberately reads only Task fields, no joins.
+    required: bool = True
     status: TaskStatus = TaskStatus.NOT_STARTED
     priority_score: float = 0
     priority_explanation: str = ""

@@ -52,6 +52,7 @@ from google.adk.tools.agent_tool import AgentTool
 from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
 from app.sub_agents.college_intake_agent import college_intake_agent
+from app.sub_agents.priority_agent import priority_pipeline
 from app.sub_agents.requirements_agent import requirements_pipeline
 from app.sub_agents.research_agent import college_research_agent
 from app.sub_agents.task_planning_agent import task_planning_pipeline
@@ -61,14 +62,16 @@ college_intake_pipeline = SequentialAgent(
     name="college_intake_pipeline",
     description=(
         "Researches and extracts structured, sourced requirements for "
-        "newly requested colleges, then plans tasks from the full "
-        "requirement set across every tracked college."
+        "newly requested colleges, plans tasks from the full requirement "
+        "set across every tracked college, then scores and explains each "
+        "task's priority."
     ),
     sub_agents=[
         college_intake_agent,
         college_research_agent,
         requirements_pipeline,
         task_planning_pipeline,
+        priority_pipeline,
     ],
 )
 

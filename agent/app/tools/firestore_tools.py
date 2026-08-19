@@ -337,6 +337,17 @@ def save_tasks(user_id: str, tasks: list[Task]) -> list[str]:
     return ids
 
 
+def update_task_priority(
+    user_id: str, task_id: str, score: float, explanation: str
+) -> None:
+    """Partial update of a Task's priority fields — Milestone 8's Priority
+    Agent calls this once per task after computing scoring.py's deterministic
+    score and an LLM-composed explanation for it."""
+    _tasks(user_id).document(task_id).update(
+        {"priorityScore": score, "priorityExplanation": explanation}
+    )
+
+
 # --- Recommendations -------------------------------------------------------
 
 

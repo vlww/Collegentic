@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Live end-to-end test of the full Milestone 3-4-7 chain,
+"""Live end-to-end test of the full Milestone 3-4-7-8 chain,
 college_intake_pipeline (college_intake_agent -> college_research_agent ->
-requirements_pipeline -> task_planning_pipeline), researching one real
-college and persisting structured, sourced requirements and planned tasks
-to Firestore.
+requirements_pipeline -> task_planning_pipeline -> priority_pipeline),
+researching one real college and persisting structured, sourced
+requirements, planned tasks, and scored/explained priorities to Firestore.
 
 Drives college_intake_pipeline directly (pre-seeding `requested_colleges`
 in state) rather than through orchestrator_agent/root_agent — since
@@ -101,6 +101,9 @@ def test_full_pipeline_researches_and_persists_requirements(user_id: str) -> Non
     # One task per requirement, never more — see task_planning_agent.py's
     # instruction ("never split one requirement into multiple tasks").
     assert len({task.source_requirement_id for task in tasks}) == len(tasks)
+    # Milestone 8: every task should have been scored and explained by now.
+    assert all(task.priority_score > 0 for task in tasks)
+    assert all(task.priority_explanation for task in tasks)
 
     runs = ft.get_agent_runs(user_id)
     agent_names = {run.agent_name for run in runs}
@@ -108,4 +111,5 @@ def test_full_pipeline_researches_and_persists_requirements(user_id: str) -> Non
     assert "findings_evaluator" in agent_names
     assert "requirements_agent" in agent_names
     assert "task_planning_agent" in agent_names
+    assert "priority_explanation_agent" in agent_names
     assert all(run.status.value == "completed" for run in runs)

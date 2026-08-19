@@ -127,6 +127,10 @@ class ExtractedTask(BaseModel):
         description="Realistic focused-work estimate — an essay draft might be "
         "60-120, requesting a recommendation 10-15, most admin tasks are short.",
     )
+    required: bool = Field(
+        description="Copy the source requirement's 'required' field exactly — "
+        "used to weight priority, don't guess."
+    )
     source_requirement_id: str = Field(
         description="The exact 'id' field from the matching requirement in "
         "REQUIREMENTS. This is what prevents duplicate tasks on re-runs — never "
@@ -163,6 +167,7 @@ RULES:
   before treating it as settled.
 - source_requirement_id MUST be the exact "id" field from the matching
   requirement above.
+- required: copy the source requirement's own "required" field exactly.
 
 Respond with a single raw JSON object matching the TaskPlan schema."""
 
@@ -184,6 +189,7 @@ def _persist_tasks(callback_context) -> None:
                 category=item.get("category"),
                 deadline=item.get("deadline_iso") or None,
                 estimated_minutes=item.get("estimated_minutes"),
+                required=item.get("required", True),
                 source_requirement_id=item["source_requirement_id"],
                 created_by=TaskCreatedBy.AGENT,
                 created_at=ft.now(),

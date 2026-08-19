@@ -146,3 +146,36 @@ def test_list_tasks(client: TestClient, user_id: str) -> None:
     scoped = client.get(f"/tasks?college_id={college_id}", headers=headers).json()
     assert len(scoped) == 1
     assert scoped[0]["title"] == "Draft essay"
+
+
+def test_recompute_priorities_refreshes_score_and_explanation_together(
+    client: TestClient, user_id: str
+) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    [task_id] = ft.save_tasks(
+        user_id,
+        [
+            Task(
+                title="Draft essay",
+                college_id=college_id,
+                deadline=ft.now(),
+                estimated_minutes=60,
+                source_requirement_id="r1",
+                priority_score=999,  # deliberately wrong, must be overwritten
+                priority_explanation="stale sentence citing an old score",
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.post("/priorities/recompute", headers=headers).json()
+    assert len(result) == 1
+    assert result[0]["id"] == task_id
+    assert result[0]["priorityScore"] > 0
+    assert result[0]["priorityScore"] != 999
+    # No LLM call in this route, but the explanation must still be replaced
+    # with fresh deterministic facts — see app/api.py's recompute_priorities
+    # docstring for the Milestone 8 bug this fixes (a stale sentence baking
+    # in a number that no longer matches the refreshed score).
+    assert "stale sentence" not in result[0]["priorityExplanation"]
+    assert result[0]["priorityExplanation"] != ""

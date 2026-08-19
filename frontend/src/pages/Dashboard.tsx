@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
-import { ComingSoon } from "@/components/ComingSoon";
 import { CollegeTable } from "@/components/collegentic/CollegeTable";
+import { TodaysPriorities } from "@/components/collegentic/TodaysPriorities";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { getColleges, getRequirements } from "@/lib/api";
@@ -37,10 +37,7 @@ export function Dashboard() {
       />
 
       <div className="mb-6">
-        <ComingSoon milestone="Milestone 8 — Deadline & Priority Agent">
-          Today's Priorities lands once the Priority Agent can score and explain what
-          matters most today, not just list every open item.
-        </ComingSoon>
+        <TodaysPriorities />
       </div>
 
       {error && (
