@@ -31,6 +31,7 @@ from app.schemas import (
     Recommendation,
     RecommenderType,
     Requirement,
+    ResearchSource,
     Task,
 )
 from app.tools import firestore_tools as ft
@@ -51,6 +52,7 @@ def user_id():
         ft._agent_runs,
         ft._pending_actions,
         ft._recommendations,
+        ft._research_sources,
     ):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
@@ -168,3 +170,47 @@ def test_save_recommendation_round_trip(user_id: str) -> None:
     assert len(recs) == 1
     assert recs[0].id == rec_id
     assert recs[0].status.value == "NotIdentified"
+
+
+def test_get_research_sources_by_ids(user_id: str) -> None:
+    """Powers the frontend's "View Source" feature (Milestone 6)."""
+    college_id = ft.save_college(user_id, College(name="MIT"))
+    [source_id] = ft.save_research_sources(
+        user_id,
+        [
+            ResearchSource(
+                college_id=college_id,
+                url="https://admissions.mit.edu",
+                title="mit.edu",
+                date_researched=ft.now(),
+                official=True,
+                confidence=ConfidenceLevel.HIGH,
+            )
+        ],
+    )
+
+    fetched = ft.get_research_sources_by_ids(user_id, [source_id, "does-not-exist"])
+    assert len(fetched) == 1  # missing id is silently skipped, not an error
+    assert fetched[0].id == source_id
+    assert fetched[0].official is True
+
+
+def test_update_college_deadlines_is_a_partial_merge(user_id: str) -> None:
+    """Milestone 6: powers the dashboard's per-college deadline columns.
+    Must merge, not overwrite, so a later partial update (e.g. only "rd"
+    found this time) doesn't wipe out a previously-found "ea"."""
+    college_id = ft.save_college(user_id, College(name="Rice"))
+
+    ft.update_college_deadlines(user_id, college_id, {"ea": "2026-11-01"})
+    ft.update_college_deadlines(user_id, college_id, {"rd": "2027-01-04"})
+
+    college = ft.get_college(user_id, college_id)
+    assert college is not None
+    assert (
+        college.deadlines.ea is not None
+        and college.deadlines.ea.date().isoformat() == "2026-11-01"
+    )
+    assert (
+        college.deadlines.rd is not None
+        and college.deadlines.rd.date().isoformat() == "2027-01-04"
+    )

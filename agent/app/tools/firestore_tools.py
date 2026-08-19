@@ -203,6 +203,21 @@ def save_readiness(user_id: str, college_id: str, readiness: Readiness) -> None:
     _colleges(user_id).document(college_id).update({"readiness": payload})
 
 
+def update_college_deadlines(
+    user_id: str, college_id: str, fields: dict[str, str]
+) -> None:
+    """Partial update of College.deadlines — `fields` maps "ea"/"ed"/"rd"/
+    "financialAid" to an ISO date string. Uses Firestore dot-path updates so
+    fields not present in `fields` are left untouched, not clobbered."""
+    if not fields:
+        return
+    payload = {
+        f"deadlines.{key}": datetime.fromisoformat(value)
+        for key, value in fields.items()
+    }
+    _colleges(user_id).document(college_id).update(payload)
+
+
 # --- Requirements -------------------------------------------------------
 
 
@@ -234,6 +249,21 @@ def get_research_sources(
     if college_id:
         query = query.where(filter=FieldFilter("collegeId", "==", college_id))
     return _read_all(query, ResearchSource)
+
+
+def get_research_sources_by_ids(
+    user_id: str, source_ids: list[str]
+) -> list[ResearchSource]:
+    """Powers the "View Source" UI: a Requirement stores `source_ids`
+    (specific doc ids), not a college_id filter, so this fetches those exact
+    docs rather than querying by field."""
+    collection = _research_sources(user_id)
+    docs = (collection.document(source_id).get() for source_id in source_ids)
+    return [
+        ResearchSource.model_validate({**doc.to_dict(), "id": doc.id})
+        for doc in docs
+        if doc.exists
+    ]
 
 
 # --- Student materials (essays/activities/notes — never agent-edited) ---

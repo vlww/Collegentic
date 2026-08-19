@@ -3,6 +3,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Onboarding } from "@/pages/Onboarding";
 import { Dashboard } from "@/pages/Dashboard";
 import { Colleges } from "@/pages/Colleges";
+import { CollegeDetail } from "@/pages/CollegeDetail";
 import { Requirements } from "@/pages/Requirements";
 import { Essays } from "@/pages/Essays";
 import { Tasks } from "@/pages/Tasks";
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/colleges" element={<Colleges />} />
+        <Route path="/colleges/:collegeId" element={<CollegeDetail />} />
         <Route path="/requirements" element={<Requirements />} />
         <Route path="/essays" element={<Essays />} />
         <Route path="/tasks" element={<Tasks />} />

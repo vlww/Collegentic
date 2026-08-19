@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import type { College, Requirement, ResearchSource } from "./types";
 
 /**
  * userId is a client-generated UUID persisted in localStorage — there is no
@@ -32,4 +33,54 @@ export async function checkHealth(): Promise<HealthStatus> {
   } catch {
     return { status: "unreachable" };
   }
+}
+
+class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number
+  ) {
+    super(message);
+  }
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      "X-User-Id": getUserId(),
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new ApiError(detail?.detail ?? res.statusText, res.status);
+  }
+  return res.json();
+}
+
+export function getColleges(): Promise<College[]> {
+  return apiFetch("/api/colleges");
+}
+
+export function getCollege(collegeId: string): Promise<College> {
+  return apiFetch(`/api/colleges/${collegeId}`);
+}
+
+export function getRequirements(collegeIds?: string[]): Promise<Requirement[]> {
+  const query = collegeIds?.length ? `?college_ids=${collegeIds.join(",")}` : "";
+  return apiFetch(`/api/requirements${query}`);
+}
+
+export function getResearchSources(sourceIds: string[]): Promise<ResearchSource[]> {
+  if (sourceIds.length === 0) return Promise.resolve([]);
+  return apiFetch(`/api/research-sources?ids=${sourceIds.join(",")}`);
+}
+
+export function sendOrchestratorMessage(message: string): Promise<{ reply: string }> {
+  return apiFetch("/api/orchestrator/messages", {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
 }

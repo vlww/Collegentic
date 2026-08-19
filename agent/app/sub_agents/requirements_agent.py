@@ -37,6 +37,7 @@ Orchestrator will use it as-is, immediately after college_research_agent.
 
 from __future__ import annotations
 
+import datetime
 import logging
 from collections.abc import AsyncGenerator
 from typing import Literal
@@ -226,6 +227,13 @@ class ExtractedRequirement(BaseModel):
     deadline_iso: str | None = Field(
         default=None, description="ISO 8601 date (YYYY-MM-DD) if found, else null."
     )
+    deadline_kind: Literal["EA", "ED", "RD", "financial_aid"] | None = Field(
+        default=None,
+        description="Set ONLY when type='deadline': which deadline this is — Early "
+        "Action, Early Decision, Regular Decision, or a financial aid deadline "
+        "(CSS Profile/FAFSA priority date). Null for every other requirement type, "
+        "and null for a deadline type you can't confidently classify into one of these.",
+    )
     category: str | None = None
     confidence: Literal["high", "medium", "low"]
     needs_verification: bool = Field(
@@ -241,7 +249,7 @@ class RequirementsExtraction(BaseModel):
     requirements: list[ExtractedRequirement]
 
 
-_REQUIREMENTS_INSTRUCTION = """You are the Requirements Agent. Convert the research
+_REQUIREMENTS_INSTRUCTION = f"""You are the Requirements Agent. Convert the research
 findings below into a structured list of application requirements — one
 entry per DISCRETE requirement per college. Do not summarize: each essay
 prompt is its own requirement, each deadline is its own requirement,
@@ -249,10 +257,12 @@ testing policy is its own requirement, each recommendation-letter rule is
 its own requirement, and so on.
 
 RAW RESEARCH FINDINGS:
-{raw_research_findings}
+{{raw_research_findings}}
 
 AVAILABLE SOURCES (short_id -> title/url/domain/claims):
-{sources}
+{{sources}}
+
+Today's date is {datetime.date.today().isoformat()}.
 
 For every requirement:
 - college_name: must exactly match a college name/header from the findings.
@@ -263,6 +273,19 @@ For every requirement:
   information seems outdated or contradicted elsewhere in the findings.
 - source_short_ids: the src-N ids whose supported_claims text overlaps with
   this specific requirement. Use [] rather than guessing a source.
+- deadline_kind: for type="deadline" items only, classify which deadline it
+  is (EA/ED/RD/financial_aid) whenever you can tell — this is what powers
+  the dashboard's per-college deadline columns. Leave null if ambiguous
+  rather than guessing.
+- deadline_iso: college deadline pages very often state a deadline as a
+  bare month/day ("November 1") with no year, implicitly meaning the
+  current or upcoming application cycle. When that's the only reason a
+  year is missing, INFER the correct year from today's date (use this
+  cycle's year if that month/day hasn't passed yet, otherwise next year's)
+  and fill in the full ISO date — this is resolving an obvious implicit
+  detail, not inventing a fact, and leaving deadline_iso null in this case
+  makes the requirement useless for the dashboard. Only leave it null if
+  the month/day itself is missing, unclear, or genuinely contradictory.
 
 Never invent a requirement, deadline, or number that wasn't in the
 findings. If the findings marked something UNCERTAIN, still extract it as a
@@ -293,12 +316,34 @@ def _persist_requirements_and_sources(callback_context) -> None:
     ] = {}  # (short_id, college_id) -> doc id
     requirements: list[Requirement] = []
     skipped_colleges: set[str] = set()
+    # college_id -> {"ea"/"ed"/"rd"/"financialAid": ISO date string} — merged
+    # into College.deadlines below so the dashboard has real dates to show,
+    # not just the underlying Requirement docs.
+    deadlines_by_college: dict[str, dict[str, str]] = {}
+    _DEADLINE_FIELD = {
+        "EA": "ea",
+        "ED": "ed",
+        "RD": "rd",
+        "financial_aid": "financialAid",
+    }
 
     for item in extracted:
         college_id = name_to_id.get(item["college_name"])
         if not college_id:
             skipped_colleges.add(item["college_name"])
             continue
+
+        deadline_kind = item.get("deadline_kind")
+        deadline_iso = item.get("deadline_iso")
+        field = _DEADLINE_FIELD.get(deadline_kind) if deadline_kind else None
+        if field and deadline_iso:
+            college_deadlines = deadlines_by_college.setdefault(college_id, {})
+            existing = college_deadlines.get(field)
+            # A college can have e.g. both ED I and ED II, which both map to
+            # "ed" — keep the earliest (ISO strings sort lexicographically),
+            # the more urgent one, rather than whichever came later in the list.
+            if existing is None or deadline_iso < existing:
+                college_deadlines[field] = deadline_iso
 
         resolved_source_ids: list[str] = []
         for short_id in item.get("source_short_ids", []):
@@ -348,6 +393,8 @@ def _persist_requirements_and_sources(callback_context) -> None:
 
     if requirements:
         ft.save_requirements(user_id, requirements)
+    for college_id, fields in deadlines_by_college.items():
+        ft.update_college_deadlines(user_id, college_id, fields)
     if skipped_colleges:
         logger.warning(
             "requirements_agent: no Firestore college_id for %s — extracted "
