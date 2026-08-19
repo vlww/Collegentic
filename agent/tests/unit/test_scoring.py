@@ -19,8 +19,12 @@ model calls. These directly encode TEST 5/6/7 from .agents-cli-spec.md
 
 from datetime import UTC, datetime, timedelta
 
-from app.schemas import CollegeDeadlines
-from app.tools.scoring import compute_priority_score, resolve_effective_deadline
+from app.schemas import CollegeDeadlines, Requirement
+from app.tools.scoring import (
+    compute_priority_score,
+    compute_readiness_score,
+    resolve_effective_deadline,
+)
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -233,3 +237,117 @@ def test_score_is_deterministic_and_bounded() -> None:
             now=NOW,
         )
         assert 0.0 <= result.score <= 100.0
+
+
+# --- compute_readiness_score ------------------------------------------------
+
+
+def _req(type_: str, completion: float, required: bool = True, **kwargs) -> Requirement:
+    return Requirement(
+        college_id="c1",
+        type=type_,
+        description="test",
+        required=required,
+        completion_percentage=completion,
+        **kwargs,
+    )
+
+
+def test_empty_requirements_gives_full_readiness() -> None:
+    """Nothing owed, nothing missing — every category and the overall score
+    default to 100."""
+    result = compute_readiness_score([], CollegeDeadlines(), now=NOW)
+    assert result.score == 100.0
+    assert result.essays == 100.0
+    assert result.recommendations == 100.0
+    assert result.testing == 100.0
+    assert result.requirements == 100.0
+
+
+def test_mit_example_matches_spec_illustration() -> None:
+    """.agents-cli-spec.md's own worked example: "MIT is 82% ready because
+    all recommendations and testing requirements are complete, but one
+    supplemental essay is only 50% complete." No deadline pressure here (far
+    out), isolating the completion-weighting math."""
+    requirements = [
+        _req("essay", 50.0),
+        _req("recommendation", 100.0),
+        _req("testing", 100.0),
+    ]
+    result = compute_readiness_score(
+        requirements, CollegeDeadlines(rd=_days(200)), now=NOW
+    )
+    assert result.essays == 50.0
+    assert result.recommendations == 100.0
+    assert result.testing == 100.0
+    assert 80.0 <= result.score <= 85.0
+
+
+def test_required_requirement_weighted_higher_than_optional() -> None:
+    """.agents-cli-spec.md: "critical requirements should have higher weight
+    than optional components." One required essay at 0%, one optional essay
+    at 100% — the weighted average must skew toward the required one's
+    completion, not sit at a plain 50/50 average."""
+    requirements = [
+        _req("essay", 0.0, required=True),
+        _req("essay", 100.0, required=False),
+    ]
+    result = compute_readiness_score(requirements, CollegeDeadlines(), now=NOW)
+    assert result.essays < 50.0
+
+
+def test_unresolved_requirement_caps_completion() -> None:
+    """A requirement still flagged needs_verification can't read as fully
+    ready even if completion_percentage says 100 — the underlying research
+    might still be wrong."""
+    requirements = [_req("testing", 100.0, needs_verification=True)]
+    result = compute_readiness_score(requirements, CollegeDeadlines(), now=NOW)
+    assert result.testing < 100.0
+    assert "verification" in result.explanation_facts
+
+
+def test_approaching_deadline_penalizes_incomplete_college() -> None:
+    incomplete_requirements = [_req("essay", 20.0)]
+    close = compute_readiness_score(
+        incomplete_requirements, CollegeDeadlines(rd=_days(2)), now=NOW
+    )
+    far = compute_readiness_score(
+        incomplete_requirements, CollegeDeadlines(rd=_days(115)), now=NOW
+    )
+    assert close.score < far.score
+
+
+def test_full_completion_ignores_deadline_pressure() -> None:
+    """A fully-done college stays at 100 readiness even with an imminent
+    deadline — nothing left to be penalized for."""
+    complete_requirements = [
+        _req("essay", 100.0),
+        _req("recommendation", 100.0),
+        _req("testing", 100.0),
+    ]
+    result = compute_readiness_score(
+        complete_requirements, CollegeDeadlines(rd=_days(1)), now=NOW
+    )
+    assert result.score == 100.0
+
+
+def test_readiness_score_is_deterministic_and_bounded() -> None:
+    requirements = [
+        _req("essay", 40.0),
+        _req("recommendation", 60.0, needs_verification=True),
+        _req("testing", 0.0, required=False),
+        _req("portfolio", 20.0),
+    ]
+    for _ in range(3):
+        result = compute_readiness_score(
+            requirements, CollegeDeadlines(ed=_days(10)), now=NOW
+        )
+        assert 0.0 <= result.score <= 100.0
+        for value in (
+            result.requirements,
+            result.essays,
+            result.recommendations,
+            result.testing,
+            result.deadline,
+        ):
+            assert 0.0 <= value <= 100.0

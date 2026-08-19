@@ -91,6 +91,10 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
     assert len(tasks) > 0
     assert all(task.priority_score > 0 for task in tasks)
 
+    refreshed_college = ft.get_college(user_id, colleges[0].id)
+    assert refreshed_college.readiness.explanation != ""
+    assert refreshed_college.readiness.computed_at is not None
+
     runs = ft.get_agent_runs(user_id)
     agent_names = {run.agent_name for run in runs}
     assert {
@@ -99,6 +103,7 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
         "requirements_agent",
         "task_planning_agent",
         "priority_explanation_agent",
+        "readiness_explanation_agent",
     } <= agent_names
 
     pipeline_run_ids = {run.pipeline_run_id for run in runs}

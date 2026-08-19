@@ -235,6 +235,23 @@ def get_requirements(user_id: str, college_ids: list[str]) -> list[Requirement]:
     return results
 
 
+def update_requirement_progress(
+    user_id: str,
+    college_id: str,
+    requirement_id: str,
+    status: str,
+    completion_percentage: float,
+) -> None:
+    """Partial update of a Requirement's own progress fields — the one place
+    a STUDENT directly asserts their own completion (not an agent inference,
+    so no human-in-the-loop approval gate applies here; see
+    .agents-cli-spec.md § Human-in-the-Loop). Feeds
+    app/tools/scoring.py's compute_readiness_score."""
+    _requirements(user_id, college_id).document(requirement_id).update(
+        {"status": status, "completionPercentage": completion_percentage}
+    )
+
+
 # --- Research sources ---------------------------------------------------
 
 

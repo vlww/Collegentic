@@ -38,11 +38,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
-from app.schemas import TaskStatus
+from app.schemas import Readiness, ReadinessBreakdown, RequirementStatus, TaskStatus
 from app.tools import firestore_tools as ft
-from app.tools.scoring import compute_priority_score, resolve_effective_deadline
+from app.tools.scoring import (
+    compute_priority_score,
+    compute_readiness_score,
+    resolve_effective_deadline,
+)
 
 # No "/api" prefix here: the frontend's Vite dev proxy (and, per the plan,
 # Cloud Run's static-serving setup later) strips a leading "/api" from every
@@ -85,6 +90,52 @@ def list_requirements(
         ids = [college.id for college in ft.get_tracked_colleges(user_id)]
     requirements = ft.get_requirements(user_id, ids)
     return [req.model_dump(mode="json", by_alias=True) for req in requirements]
+
+
+class RequirementProgressUpdate(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    status: RequirementStatus
+    completion_percentage: float | None = None
+
+
+# A requirement's completion_percentage when the caller sets only `status` —
+# lets the Requirements page offer one status dropdown per requirement
+# rather than a second percentage input, while still feeding
+# compute_readiness_score a graduated (not binary) completion signal. The
+# caller can still pass an explicit completion_percentage to override this.
+_STATUS_DEFAULT_COMPLETION = {
+    RequirementStatus.NOT_STARTED: 0.0,
+    RequirementStatus.PLANNING: 15.0,
+    RequirementStatus.IN_PROGRESS: 40.0,
+    RequirementStatus.NEARLY_COMPLETE: 75.0,
+    RequirementStatus.COMPLETE: 100.0,
+    RequirementStatus.SUBMITTED: 100.0,
+    RequirementStatus.VERIFIED: 100.0,
+}
+
+
+@router.patch("/colleges/{college_id}/requirements/{requirement_id}")
+def update_requirement_progress(
+    college_id: str,
+    requirement_id: str,
+    body: RequirementProgressUpdate,
+    user_id: str = Depends(require_user_id),
+) -> dict:
+    """The one place a student directly asserts their own progress on a
+    requirement (e.g. "I've drafted this essay") — not an agent inference,
+    so no human-in-the-loop approval gate applies (.agents-cli-spec.md §
+    Human-in-the-Loop only gates agent-derived completions). Feeds
+    compute_readiness_score; the frontend calls POST /readiness/recompute
+    right after this to refresh the affected college's score."""
+    completion_percentage = (
+        body.completion_percentage
+        if body.completion_percentage is not None
+        else _STATUS_DEFAULT_COMPLETION[body.status]
+    )
+    ft.update_requirement_progress(
+        user_id, college_id, requirement_id, body.status.value, completion_percentage
+    )
+    return {"status": "ok"}
 
 
 @router.get("/tasks")
@@ -135,6 +186,42 @@ def recompute_priorities(user_id: str = Depends(require_user_id)) -> list[dict]:
         )
     return [
         task.model_dump(mode="json", by_alias=True) for task in ft.get_tasks(user_id)
+    ]
+
+
+@router.post("/readiness/recompute")
+def recompute_readiness(user_id: str = Depends(require_user_id)) -> list[dict]:
+    """Refreshes every tracked college's readiness score AND breakdown,
+    deterministically — no LLM call (app/tools/scoring.py), same reasoning
+    as /priorities/recompute. Called by the frontend right after a manual
+    requirement-progress update so the Readiness page reflects it
+    immediately rather than waiting for the next full pipeline run.
+
+    Overwrites `explanation` with the freshly-computed `explanation_facts`
+    (plain but accurate) rather than preserving a stale LLM sentence — same
+    self-contradiction bug recompute_priorities fixes (Milestone 8): a score
+    that moved on while its old sentence still cited the previous number.
+    """
+    colleges = ft.get_tracked_colleges(user_id)
+    for college in colleges:
+        requirements = ft.get_requirements(user_id, [college.id])
+        result = compute_readiness_score(requirements, college.deadlines)
+        readiness = Readiness(
+            score=result.score,
+            breakdown=ReadinessBreakdown(
+                requirements=result.requirements,
+                essays=result.essays,
+                recommendations=result.recommendations,
+                testing=result.testing,
+                deadline=result.deadline,
+            ),
+            explanation=result.explanation_facts,
+            computed_at=ft.now(),
+        )
+        ft.save_readiness(user_id, college.id, readiness)
+    return [
+        college.model_dump(mode="json", by_alias=True)
+        for college in ft.get_tracked_colleges(user_id)
     ]
 
 

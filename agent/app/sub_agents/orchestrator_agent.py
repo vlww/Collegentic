@@ -53,6 +53,7 @@ from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
 from app.sub_agents.college_intake_agent import college_intake_agent
 from app.sub_agents.priority_agent import priority_pipeline
+from app.sub_agents.readiness_agent import readiness_pipeline
 from app.sub_agents.requirements_agent import requirements_pipeline
 from app.sub_agents.research_agent import college_research_agent
 from app.sub_agents.task_planning_agent import task_planning_pipeline
@@ -63,8 +64,9 @@ college_intake_pipeline = SequentialAgent(
     description=(
         "Researches and extracts structured, sourced requirements for "
         "newly requested colleges, plans tasks from the full requirement "
-        "set across every tracked college, then scores and explains each "
-        "task's priority."
+        "set across every tracked college, scores and explains each task's "
+        "priority, then scores and explains every tracked college's "
+        "application readiness."
     ),
     sub_agents=[
         college_intake_agent,
@@ -72,6 +74,7 @@ college_intake_pipeline = SequentialAgent(
         requirements_pipeline,
         task_planning_pipeline,
         priority_pipeline,
+        readiness_pipeline,
     ],
 )
 
@@ -143,7 +146,8 @@ calling `college_intake_pipeline` (there's nothing new to research).
 FULL PIPELINE CONTEXT (populated only after college_intake_pipeline
 returns — empty before that, ignore it until then):
 RESEARCH FINDINGS: {raw_research_findings?}
-PLANNED TASKS: {planned_tasks?}"""
+PLANNED TASKS: {planned_tasks?}
+READINESS: {college_readiness_context?}"""
 
 
 orchestrator_agent = LlmAgent(

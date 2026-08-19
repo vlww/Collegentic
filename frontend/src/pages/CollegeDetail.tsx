@@ -4,10 +4,11 @@ import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/collegentic/StatusBadge";
 import { RequirementsList } from "@/components/collegentic/RequirementsList";
+import { ReadinessCard } from "@/components/collegentic/ReadinessCard";
 import { Card, CardContent } from "@/components/ui/card";
-import { getCollege, getRequirements } from "@/lib/api";
+import { getCollege, getRequirements, recomputeReadiness } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { College, Requirement } from "@/lib/types";
+import type { College, Requirement, RequirementStatus } from "@/lib/types";
 
 export function CollegeDetail() {
   const { collegeId } = useParams<{ collegeId: string }>();
@@ -34,11 +35,19 @@ export function CollegeDetail() {
     );
   }
 
+  async function handleProgressChange(requirementId: string, status: RequirementStatus) {
+    setRequirements((prev) =>
+      prev.map((r) => (r.id === requirementId ? { ...r, status } : r))
+    );
+    await recomputeReadiness();
+    if (collegeId) getCollege(collegeId).then(setCollege);
+  }
+
   if (!college) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
 
-  const { deadlines } = college;
+  const { deadlines, readiness } = college;
 
   return (
     <div className="space-y-6">
@@ -73,8 +82,16 @@ export function CollegeDetail() {
       </Card>
 
       <div>
+        <h2 className="text-sm font-semibold mb-3">Application Readiness</h2>
+        <ReadinessCard collegeName={college.name} readiness={readiness} />
+      </div>
+
+      <div>
         <h2 className="text-sm font-semibold mb-3">Requirements</h2>
-        <RequirementsList requirements={requirements} />
+        <RequirementsList
+          requirements={requirements}
+          onProgressChange={handleProgressChange}
+        />
       </div>
     </div>
   );

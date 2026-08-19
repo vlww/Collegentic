@@ -12,11 +12,12 @@ interface CollegeTableProps {
 
 /**
  * The core "what's going on with all of my applications?" view (spec § 6).
- * Progress / essays / recommendations / priority / readiness columns from
- * the original mock aren't shown yet — those agents don't exist until
- * Milestones 7-9; showing a fake number for them would violate "don't build
- * mock features that pretend to work." What's real today: status, the
- * nearest known deadline, and a requirement-verification count.
+ * Essay/recommendation-specific columns from the original mock still aren't
+ * shown — Essay Matching (Milestone 11) and Conflict Detection (Milestone
+ * 10) don't exist yet, and showing a fake number for them would violate
+ * "don't build mock features that pretend to work." What's real today:
+ * status, the nearest known deadline, a requirement-verification count, and
+ * (Milestone 9) readiness.
  */
 export function CollegeTable({ colleges, requirementsByCollege }: CollegeTableProps) {
   return (
@@ -28,6 +29,7 @@ export function CollegeTable({ colleges, requirementsByCollege }: CollegeTablePr
             <th className="px-4 py-2.5 font-medium">Status</th>
             <th className="px-4 py-2.5 font-medium">Next deadline</th>
             <th className="px-4 py-2.5 font-medium">Requirements</th>
+            <th className="px-4 py-2.5 font-medium">Readiness</th>
             <th className="px-4 py-2.5 font-medium" />
           </tr>
         </thead>
@@ -71,6 +73,24 @@ export function CollegeTable({ colleges, requirementsByCollege }: CollegeTablePr
                           {needsVerification} to verify
                         </span>
                       )}
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {college.readiness.computedAt === null ? (
+                    <span className="text-muted-foreground">Not scored yet</span>
+                  ) : (
+                    <span
+                      className={cn(
+                        "font-medium tabular-nums",
+                        college.readiness.score >= 70
+                          ? "text-success"
+                          : college.readiness.score >= 40
+                            ? "text-warning"
+                            : "text-destructive"
+                      )}
+                    >
+                      {Math.round(college.readiness.score)}%
                     </span>
                   )}
                 </td>

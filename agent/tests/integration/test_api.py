@@ -148,6 +148,89 @@ def test_list_tasks(client: TestClient, user_id: str) -> None:
     assert scoped[0]["title"] == "Draft essay"
 
 
+def test_update_requirement_progress_defaults_completion_from_status(
+    client: TestClient, user_id: str
+) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    [requirement_id] = ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why Rice",
+                confidence=ConfidenceLevel.HIGH,
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    res = client.patch(
+        f"/colleges/{college_id}/requirements/{requirement_id}",
+        json={"status": "NearlyComplete"},
+        headers=headers,
+    )
+    assert res.status_code == 200
+
+    updated = ft.get_requirements(user_id, [college_id])[0]
+    assert updated.status.value == "NearlyComplete"
+    assert updated.completion_percentage == 75.0  # status default, not given explicitly
+
+
+def test_update_requirement_progress_accepts_explicit_percentage(
+    client: TestClient, user_id: str
+) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    [requirement_id] = ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why Rice",
+                confidence=ConfidenceLevel.HIGH,
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    res = client.patch(
+        f"/colleges/{college_id}/requirements/{requirement_id}",
+        json={"status": "InProgress", "completionPercentage": 33},
+        headers=headers,
+    )
+    assert res.status_code == 200
+
+    updated = ft.get_requirements(user_id, [college_id])[0]
+    assert updated.completion_percentage == 33.0
+
+
+def test_recompute_readiness_refreshes_score_and_explanation_together(
+    client: TestClient, user_id: str
+) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why Rice",
+                completion_percentage=100,
+                confidence=ConfidenceLevel.HIGH,
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.post("/readiness/recompute", headers=headers).json()
+    assert len(result) == 1
+    assert result[0]["id"] == college_id
+    assert result[0]["readiness"]["score"] > 0
+    assert result[0]["readiness"]["explanation"] != ""
+    assert result[0]["readiness"]["computedAt"] is not None
+
+
 def test_recompute_priorities_refreshes_score_and_explanation_together(
     client: TestClient, user_id: str
 ) -> None:

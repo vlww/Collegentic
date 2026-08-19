@@ -84,6 +84,33 @@ export function recomputePriorities(): Promise<Task[]> {
   return apiFetch("/api/priorities/recompute", { method: "POST" });
 }
 
+/** Refreshes readiness scores only (no LLM call) — see app/api.py's
+ * recompute_readiness. Call after updateRequirementProgress so the
+ * Readiness page reflects a manual update immediately. */
+export function recomputeReadiness(): Promise<College[]> {
+  return apiFetch("/api/readiness/recompute", { method: "POST" });
+}
+
+/** The one place a student directly asserts their own progress on a
+ * requirement — see app/api.py's update_requirement_progress. Omitting
+ * completionPercentage lets the backend derive it from `status`. */
+export function updateRequirementProgress(
+  collegeId: string,
+  requirementId: string,
+  status: Requirement["status"],
+  completionPercentage?: number
+): Promise<void> {
+  return apiFetch(`/api/colleges/${collegeId}/requirements/${requirementId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      status,
+      ...(completionPercentage !== undefined
+        ? { completionPercentage }
+        : {}),
+    }),
+  });
+}
+
 export function getResearchSources(sourceIds: string[]): Promise<ResearchSource[]> {
   if (sourceIds.length === 0) return Promise.resolve([]);
   return apiFetch(`/api/research-sources?ids=${sourceIds.join(",")}`);

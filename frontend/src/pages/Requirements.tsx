@@ -8,8 +8,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getColleges, getRequirements } from "@/lib/api";
-import type { College, Requirement } from "@/lib/types";
+import { getColleges, getRequirements, recomputeReadiness } from "@/lib/api";
+import type { College, Requirement, RequirementStatus } from "@/lib/types";
 
 const ALL_COLLEGES = "__all__";
 
@@ -37,6 +37,15 @@ export function Requirements() {
       ? requirements
       : requirements.filter((r) => r.collegeId === collegeFilter);
 
+  function handleProgressChange(requirementId: string, status: RequirementStatus) {
+    setRequirements((prev) =>
+      prev.map((r) => (r.id === requirementId ? { ...r, status } : r))
+    );
+    // Fire-and-forget: keeps College.readiness current for the Readiness
+    // page without making the student wait on this row's own update.
+    recomputeReadiness();
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -63,6 +72,7 @@ export function Requirements() {
       <RequirementsList
         requirements={filtered}
         collegeName={collegeFilter === ALL_COLLEGES ? (id) => collegeNameById[id] ?? id : undefined}
+        onProgressChange={handleProgressChange}
       />
     </div>
   );

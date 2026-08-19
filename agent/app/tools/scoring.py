@@ -58,6 +58,14 @@ listed date. This is the one deliberately non-literal reading of "deadline
 proximity" in the formula, and it's called out explicitly in
 `explanation_facts` when it applies, so it stays explainable rather than a
 silent fudge.
+
+`compute_readiness_score` (.agents-cli-spec.md § Application Readiness Agent:
+"weighted completion of required components with additional penalties for
+unresolved requirements, approaching deadlines... critical requirements
+should have higher weight than optional components") reuses the same
+linear deadline-decay shape as `compute_priority_score` via
+`_deadline_urgency_fraction`, so "how urgent is this deadline" means the
+same thing everywhere in the app.
 """
 
 from __future__ import annotations
@@ -65,7 +73,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from app.schemas import CollegeDeadlines
+from app.schemas import CollegeDeadlines, Requirement
 
 _DEADLINE_URGENCY_WEIGHT = 0.40
 _WORKLOAD_PRESSURE_WEIGHT = 0.20
@@ -103,6 +111,33 @@ def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
     return max(low, min(high, value))
 
 
+def _deadline_urgency_fraction(days_until: int | None) -> float:
+    """0.0 (120+ days out or no deadline) ramping linearly to 1.0 (at or past
+    the deadline) — the same horizon `compute_priority_score` uses, shared so
+    "urgent" means the same thing across scoring functions."""
+    if days_until is None:
+        return 0.0
+    return _clamp(1 - days_until / _DEADLINE_URGENCY_HORIZON_DAYS, 0.0, 1.0)
+
+
+def _earliest_college_deadline(
+    college_deadlines: CollegeDeadlines | None,
+) -> datetime | None:
+    if college_deadlines is None:
+        return None
+    candidates = [
+        d
+        for d in (
+            college_deadlines.ea,
+            college_deadlines.ed,
+            college_deadlines.rd,
+            college_deadlines.financial_aid,
+        )
+        if d is not None
+    ]
+    return min(candidates) if candidates else None
+
+
 def resolve_effective_deadline(
     task_deadline: datetime | None, college_deadlines: CollegeDeadlines | None
 ) -> datetime | None:
@@ -123,19 +158,7 @@ def resolve_effective_deadline(
     """
     if task_deadline is not None:
         return task_deadline
-    if college_deadlines is None:
-        return None
-    candidates = [
-        d
-        for d in (
-            college_deadlines.ea,
-            college_deadlines.ed,
-            college_deadlines.rd,
-            college_deadlines.financial_aid,
-        )
-        if d is not None
-    ]
-    return min(candidates) if candidates else None
+    return _earliest_college_deadline(college_deadlines)
 
 
 def compute_priority_score(
@@ -160,9 +183,7 @@ def compute_priority_score(
         if category == "recommendation":
             effective_days -= _RECOMMENDATION_LEAD_TIME_DAYS
             lead_time_applied = True
-        deadline_urgency = _clamp(
-            100.0 * (1 - effective_days / _DEADLINE_URGENCY_HORIZON_DAYS)
-        )
+        deadline_urgency = 100.0 * _deadline_urgency_fraction(effective_days)
 
     workload_pressure = _clamp(
         100.0 * (estimated_minutes or 0) / _WORKLOAD_PRESSURE_CAP_MINUTES
@@ -235,4 +256,166 @@ def _format_facts(
     parts.append(f"status: {status}")
     if has_dependencies:
         parts.append("has unmet dependencies")
+    return "; ".join(parts)
+
+
+# --- Application Readiness -----------------------------------------------
+
+# Category weights for the four completion-based breakdown components (sum
+# to 1.0). Essays and recommendations weighted highest — spec's own MIT
+# example treats an incomplete supplemental essay as the dominant drag on
+# readiness, and in practice these are the two categories a student most
+# often stalls on.
+_ESSAYS_WEIGHT = 0.35
+_RECOMMENDATIONS_WEIGHT = 0.25
+_TESTING_WEIGHT = 0.15
+_MISC_REQUIREMENTS_WEIGHT = 0.25
+
+# Within a category, a required requirement counts this many times an
+# optional one — .agents-cli-spec.md: "critical requirements should have
+# higher weight than optional components."
+_REQUIRED_COMPLETION_WEIGHT = 3.0
+_OPTIONAL_COMPLETION_WEIGHT = 1.0
+
+# A requirement whose own research is still `needs_verification` can't read
+# as more than this, even if the student marked further progress on it — the
+# requirement's DETAILS might still be wrong, so full credit would overstate
+# readiness. This is the formula's "penalty for unresolved requirements."
+_UNVERIFIED_COMPLETION_CAP = 60.0
+
+_MISC_REQUIREMENT_TYPES = frozenset(
+    {"portfolio", "interview", "major_specific", "financial_aid"}
+)
+
+
+@dataclass(frozen=True)
+class ReadinessResult:
+    score: float
+    requirements: float
+    essays: float
+    recommendations: float
+    testing: float
+    deadline: float
+    explanation_facts: str
+
+
+def _category_completion(requirements: list[Requirement]) -> float:
+    """Weighted-average `completion_percentage` across `requirements`
+    (required requirements count `_REQUIRED_COMPLETION_WEIGHT` times an
+    optional one), capping any requirement still flagged
+    `needs_verification` at `_UNVERIFIED_COMPLETION_CAP`. Returns 100 — this
+    category owes the student nothing — when the college has no requirements
+    of this type at all."""
+    if not requirements:
+        return 100.0
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for req in requirements:
+        weight = (
+            _REQUIRED_COMPLETION_WEIGHT if req.required else _OPTIONAL_COMPLETION_WEIGHT
+        )
+        completion = req.completion_percentage
+        if req.needs_verification:
+            completion = min(completion, _UNVERIFIED_COMPLETION_CAP)
+        weighted_sum += weight * completion
+        total_weight += weight
+    return weighted_sum / total_weight
+
+
+def compute_readiness_score(
+    requirements: list[Requirement],
+    college_deadlines: CollegeDeadlines | None,
+    now: datetime | None = None,
+) -> ReadinessResult:
+    """.agents-cli-spec.md § Application Readiness Agent: "Readiness =
+    weighted completion of required components with additional penalties
+    for unresolved requirements, approaching deadlines, missing critical
+    dependencies."
+
+    `essays` / `recommendations` / `testing` / `requirements` are each a
+    weighted completion percentage scoped to that Requirement.type (the
+    `requirements` breakdown is the catch-all for portfolio/interview/
+    major-specific/financial-aid requirements, not "everything" — otherwise
+    it would double-count the other three categories it's displayed
+    alongside). `deadline` is not a completion percentage: it measures how
+    much the nearest deadline is squeezing readiness given remaining work —
+    100 if fully done or no deadline is close, dropping toward 0 as the
+    deadline nears while work remains outstanding. The overall `score` IS
+    that deadline-adjusted figure, so "penalty for approaching deadlines"
+    is applied once, not folded into an unweighted average alongside the
+    other four (which would understate a looming deadline for a mostly-idle
+    college).
+    """
+    now = now or datetime.now(UTC)
+
+    essays = _category_completion([r for r in requirements if r.type == "essay"])
+    recommendations = _category_completion(
+        [r for r in requirements if r.type == "recommendation"]
+    )
+    testing = _category_completion([r for r in requirements if r.type == "testing"])
+    misc_requirements = _category_completion(
+        [r for r in requirements if r.type in _MISC_REQUIREMENT_TYPES]
+    )
+
+    base_completion = (
+        _ESSAYS_WEIGHT * essays
+        + _RECOMMENDATIONS_WEIGHT * recommendations
+        + _TESTING_WEIGHT * testing
+        + _MISC_REQUIREMENTS_WEIGHT * misc_requirements
+    )
+
+    nearest_deadline = _earliest_college_deadline(college_deadlines)
+    days_until_deadline: int | None = None
+    if nearest_deadline is not None:
+        days_until_deadline = (nearest_deadline - now).days
+    urgency_fraction = _deadline_urgency_fraction(days_until_deadline)
+    deadline_readiness = _clamp(
+        base_completion - (100.0 - base_completion) * urgency_fraction
+    )
+
+    facts = _format_readiness_facts(
+        essays=essays,
+        recommendations=recommendations,
+        testing=testing,
+        misc_requirements=misc_requirements,
+        days_until_deadline=days_until_deadline,
+        unresolved_count=sum(1 for r in requirements if r.needs_verification),
+    )
+
+    return ReadinessResult(
+        score=round(deadline_readiness, 1),
+        requirements=round(misc_requirements, 1),
+        essays=round(essays, 1),
+        recommendations=round(recommendations, 1),
+        testing=round(testing, 1),
+        deadline=round(deadline_readiness, 1),
+        explanation_facts=facts,
+    )
+
+
+def _format_readiness_facts(
+    *,
+    essays: float,
+    recommendations: float,
+    testing: float,
+    misc_requirements: float,
+    days_until_deadline: int | None,
+    unresolved_count: int,
+) -> str:
+    parts = [
+        f"essays {essays:.0f}% complete",
+        f"recommendations {recommendations:.0f}% complete",
+        f"testing {testing:.0f}% complete",
+        f"other requirements {misc_requirements:.0f}% complete",
+    ]
+    if days_until_deadline is None:
+        parts.append("no known deadline")
+    elif days_until_deadline < 0:
+        parts.append(f"deadline was {abs(days_until_deadline)} day(s) ago")
+    else:
+        parts.append(f"deadline is {days_until_deadline} day(s) away")
+    if unresolved_count:
+        parts.append(
+            f"{unresolved_count} requirement(s) still need research verification"
+        )
     return "; ".join(parts)
