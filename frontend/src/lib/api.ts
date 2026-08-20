@@ -1,5 +1,14 @@
 import { v4 as uuidv4 } from "uuid";
-import type { College, Conflict, Requirement, ResearchSource, Task } from "./types";
+import type {
+  College,
+  Conflict,
+  EssayMatch,
+  EssayPrompt,
+  Requirement,
+  ResearchSource,
+  StudentMaterial,
+  Task,
+} from "./types";
 
 /**
  * userId is a client-generated UUID persisted in localStorage — there is no
@@ -126,6 +135,34 @@ export function acknowledgeConflict(conflictId: string): Promise<void> {
 
 export function resolveConflict(conflictId: string): Promise<void> {
   return apiFetch(`/api/conflicts/${conflictId}/resolve`, { method: "POST" });
+}
+
+export function getMaterials(): Promise<StudentMaterial[]> {
+  return apiFetch("/api/materials");
+}
+
+export interface CreateMaterialInput {
+  title: string;
+  type: StudentMaterial["type"];
+  topic?: string;
+  description?: string;
+  partialText?: string;
+  wordCount?: number;
+}
+
+/** The one place a StudentMaterial comes into existence — see app/api.py's
+ * create_material. Collegentic never writes or edits essay text itself. */
+export function createMaterial(input: CreateMaterialInput): Promise<StudentMaterial> {
+  return apiFetch("/api/materials", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function getEssayPrompts(collegeIds?: string[]): Promise<EssayPrompt[]> {
+  const query = collegeIds?.length ? `?college_ids=${collegeIds.join(",")}` : "";
+  return apiFetch(`/api/essay-prompts${query}`);
+}
+
+export function getEssayMatches(): Promise<EssayMatch[]> {
+  return apiFetch("/api/essay-matches");
 }
 
 export function sendOrchestratorMessage(message: string): Promise<{ reply: string }> {

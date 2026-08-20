@@ -21,6 +21,7 @@ from google.adk.tools.agent_tool import AgentTool
 from app.agent import root_agent
 from app.sub_agents.orchestrator_agent import (
     college_intake_pipeline,
+    cross_college_analysis,
     orchestrator_agent,
 )
 
@@ -62,8 +63,13 @@ def test_intake_pipeline_stage_order() -> None:
         "college_intake_agent",
         "college_research_agent",
         "requirements_pipeline",
-        "conflict_pipeline",
+        "cross_college_analysis",
         "task_planning_pipeline",
         "priority_pipeline",
         "readiness_pipeline",
     ]
+
+
+def test_cross_college_analysis_runs_conflict_and_essay_matching_concurrently() -> None:
+    branch_names = {agent.name for agent in cross_college_analysis.sub_agents}
+    assert branch_names == {"conflict_pipeline", "essay_matching_pipeline"}

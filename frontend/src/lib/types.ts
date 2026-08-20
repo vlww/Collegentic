@@ -124,3 +124,59 @@ export interface Conflict {
   relatedRequirementIds: string[];
   status: ConflictStatus;
 }
+
+export type MaterialType =
+  | "CommonApp"
+  | "Supplemental"
+  | "ActivityDescription"
+  | "Award"
+  | "Note"
+  | "Idea";
+
+export type MaterialStatus =
+  | "NotStarted"
+  | "Idea"
+  | "Drafting"
+  | "InProgress"
+  | "NearlyComplete"
+  | "Complete"
+  | "Submitted";
+
+export interface StudentMaterial {
+  id: string;
+  title: string;
+  type: MaterialType;
+  topic: string | null;
+  description: string | null;
+  partialText: string | null;
+  completionPercentage: number;
+  wordCount: number | null;
+  themes: string[];
+  status: MaterialStatus;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface EssayPrompt {
+  id: string;
+  collegeId: string;
+  text: string;
+  wordLimit: number | null;
+  required: boolean;
+  category: string | null;
+  requirementId: string | null;
+}
+
+export type MatchRecommendation = "adapt" | "new";
+
+export interface EssayMatch {
+  id: string;
+  promptId: string;
+  collegeId: string;
+  materialId: string;
+  matchScore: number;
+  sharedThemes: string[];
+  recommendation: MatchRecommendation;
+  reasoning: string;
+  computedAt: string | null;
+}

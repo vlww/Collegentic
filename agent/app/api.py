@@ -43,9 +43,11 @@ from pydantic.alias_generators import to_camel
 
 from app.schemas import (
     ConflictStatus,
+    MaterialType,
     Readiness,
     ReadinessBreakdown,
     RequirementStatus,
+    StudentMaterial,
     TaskStatus,
 )
 from app.tools import firestore_tools as ft
@@ -257,6 +259,72 @@ def resolve_conflict(conflict_id: str, user_id: str = Depends(require_user_id)) 
     app/sub_agents/conflict_agent.py's fingerprint-merge docstring."""
     ft.update_conflict_status(user_id, conflict_id, ConflictStatus.RESOLVED)
     return {"status": "ok"}
+
+
+class CreateMaterialRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    title: str
+    type: MaterialType
+    topic: str | None = None
+    description: str | None = None
+    partial_text: str | None = None
+    word_count: int | None = None
+
+
+@router.get("/materials")
+def list_materials(user_id: str = Depends(require_user_id)) -> list[dict]:
+    return [
+        material.model_dump(mode="json", by_alias=True)
+        for material in ft.get_student_materials(user_id)
+    ]
+
+
+@router.post("/materials")
+def create_material(
+    body: CreateMaterialRequest, user_id: str = Depends(require_user_id)
+) -> dict:
+    """The student's own essay/activity/note library — .agents-cli-spec.md
+    § Constraints: "never edited by agents." This is the only way a
+    StudentMaterial comes into existence; essay_analysis_agent
+    (app/sub_agents/essay_matching_agent.py) only ever reads these, never
+    writes or edits their text."""
+    material_id = ft.save_student_material(
+        user_id,
+        StudentMaterial(
+            title=body.title,
+            type=body.type,
+            topic=body.topic,
+            description=body.description,
+            partial_text=body.partial_text,
+            word_count=body.word_count,
+        ),
+    )
+    material = next(m for m in ft.get_student_materials(user_id) if m.id == material_id)
+    return material.model_dump(mode="json", by_alias=True)
+
+
+@router.get("/essay-prompts")
+def list_essay_prompts(
+    college_ids: str | None = None, user_id: str = Depends(require_user_id)
+) -> list[dict]:
+    if college_ids:
+        ids = [i for i in college_ids.split(",") if i]
+    else:
+        ids = [college.id for college in ft.get_tracked_colleges(user_id)]
+    prompts = [
+        prompt
+        for college_id in ids
+        for prompt in ft.get_essay_prompts(user_id, college_id)
+    ]
+    return [prompt.model_dump(mode="json", by_alias=True) for prompt in prompts]
+
+
+@router.get("/essay-matches")
+def list_essay_matches(user_id: str = Depends(require_user_id)) -> list[dict]:
+    return [
+        match.model_dump(mode="json", by_alias=True)
+        for match in ft.get_essay_matches(user_id)
+    ]
 
 
 @router.get("/research-sources")

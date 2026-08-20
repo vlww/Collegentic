@@ -45,7 +45,7 @@ an approval step here would also contradict § Welcome / Initial Setup's
 
 from __future__ import annotations
 
-from google.adk.agents import LlmAgent, SequentialAgent
+from google.adk.agents import LlmAgent, ParallelAgent, SequentialAgent
 from google.adk.tools import ToolContext
 from google.adk.tools.agent_tool import AgentTool
 
@@ -53,6 +53,7 @@ from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
 from app.sub_agents.college_intake_agent import college_intake_agent
 from app.sub_agents.conflict_agent import conflict_pipeline
+from app.sub_agents.essay_matching_agent import essay_matching_pipeline
 from app.sub_agents.priority_agent import priority_pipeline
 from app.sub_agents.readiness_agent import readiness_pipeline
 from app.sub_agents.requirements_agent import requirements_pipeline
@@ -60,20 +61,31 @@ from app.sub_agents.research_agent import college_research_agent
 from app.sub_agents.task_planning_agent import task_planning_pipeline
 from app.tools import firestore_tools as ft
 
+# .agents-cli-spec.md § Architecture step 3, now complete: conflict_pipeline
+# (Milestone 10) and essay_matching_pipeline (Milestone 11) both only read
+# Requirements/Recommendations/StudentMaterials — neither depends on the
+# other's output — so they run concurrently, exactly as originally spec'd.
+cross_college_analysis = ParallelAgent(
+    name="cross_college_analysis",
+    description="Detects cross-college conflicts and scores essay reuse-fit concurrently.",
+    sub_agents=[conflict_pipeline, essay_matching_pipeline],
+)
+
 college_intake_pipeline = SequentialAgent(
     name="college_intake_pipeline",
     description=(
         "Researches and extracts structured, sourced requirements for "
-        "newly requested colleges, detects cross-college conflicts, plans "
-        "tasks from the full requirement set across every tracked college, "
-        "scores and explains each task's priority, then scores and "
-        "explains every tracked college's application readiness."
+        "newly requested colleges, detects cross-college conflicts and "
+        "scores essay reuse-fit, plans tasks from the full requirement set "
+        "across every tracked college, scores and explains each task's "
+        "priority, then scores and explains every tracked college's "
+        "application readiness."
     ),
     sub_agents=[
         college_intake_agent,
         college_research_agent,
         requirements_pipeline,
-        conflict_pipeline,
+        cross_college_analysis,
         task_planning_pipeline,
         priority_pipeline,
         readiness_pipeline,
@@ -152,6 +164,7 @@ FULL PIPELINE CONTEXT (populated only after college_intake_pipeline
 returns — empty before that, ignore it until then):
 RESEARCH FINDINGS: {raw_research_findings?}
 CONFLICTS: {detected_conflicts?}
+ESSAY ANALYSIS: {essay_analysis?}
 PLANNED TASKS: {planned_tasks?}
 READINESS: {college_readiness_context?}"""
 

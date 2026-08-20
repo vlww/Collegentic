@@ -43,8 +43,17 @@ def user_id():
     for college in ft.get_tracked_colleges(uid):
         for req in ft._read_all(ft._requirements(uid, college.id), Requirement):
             ft._requirements(uid, college.id).document(req.id).delete()
+        for prompt in ft.get_essay_prompts(uid, college.id):
+            ft._essay_prompts(uid, college.id).document(prompt.id).delete()
         ft._colleges(uid).document(college.id).delete()
-    for coll_fn in (ft._research_sources, ft._agent_runs, ft._tasks, ft._conflicts):
+    for coll_fn in (
+        ft._research_sources,
+        ft._agent_runs,
+        ft._tasks,
+        ft._conflicts,
+        ft._materials,
+        ft._essay_matches,
+    ):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
 
@@ -100,6 +109,15 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
     # independent of what the LLM decides (see conflict_agent.py).
     assert ft.get_conflicts(user_id) == []
 
+    # Essay prompts get structured from essay-type Requirements even with
+    # zero StudentMaterials on file — but no match is possible without any
+    # material to compare against, guaranteed by _persist_essay_analysis's
+    # own id validation (see essay_matching_agent.py).
+    essay_requirements = [r for r in requirements if r.type == "essay"]
+    if essay_requirements:
+        assert ft.get_essay_prompts(user_id, colleges[0].id)
+    assert ft.get_essay_matches(user_id) == []
+
     runs = ft.get_agent_runs(user_id)
     agent_names = {run.agent_name for run in runs}
     assert {
@@ -107,6 +125,7 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
         "college_research_agent",
         "requirements_agent",
         "conflict_detection_agent",
+        "essay_analysis_agent",
         "task_planning_agent",
         "priority_explanation_agent",
         "readiness_explanation_agent",

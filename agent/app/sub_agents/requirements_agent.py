@@ -377,6 +377,19 @@ def _persist_requirements_and_sources(callback_context) -> None:
                 source_doc_id_cache[cache_key] = doc_id
             resolved_source_ids.append(source_doc_id_cache[cache_key])
 
+        # .agents-cli-spec.md § Constraints: "Every stored Requirement must
+        # carry at least one sourceId once research has run on it;
+        # requirements with zero sources are allowed only in the
+        # not_researched state." Enforced in code, not just by instruction —
+        # found live (Milestone 11's full test-suite run): the LLM
+        # occasionally emits an item with an empty source_short_ids AND
+        # needs_verification=False in the same breath (self-inconsistent),
+        # which the instruction alone doesn't prevent. A missing source
+        # always means needs_verification, regardless of what the LLM said.
+        needs_verification = (
+            item.get("needs_verification", False) or not resolved_source_ids
+        )
+
         requirements.append(
             Requirement(
                 college_id=college_id,
@@ -386,7 +399,7 @@ def _persist_requirements_and_sources(callback_context) -> None:
                 deadline=item.get("deadline_iso") or None,
                 category=item.get("category"),
                 confidence=item["confidence"],
-                needs_verification=item.get("needs_verification", False),
+                needs_verification=needs_verification,
                 source_ids=resolved_source_ids,
             )
         )

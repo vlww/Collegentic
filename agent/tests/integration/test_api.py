@@ -36,8 +36,12 @@ from app.schemas import (
     College,
     ConfidenceLevel,
     Conflict,
+    EssayMatch,
+    EssayPrompt,
+    MaterialType,
     Requirement,
     ResearchSource,
+    StudentMaterial,
     Task,
 )
 from app.tools import firestore_tools as ft
@@ -57,8 +61,16 @@ def user_id():
     for college in ft.get_tracked_colleges(uid):
         for req in ft._read_all(ft._requirements(uid, college.id), Requirement):
             ft._requirements(uid, college.id).document(req.id).delete()
+        for prompt in ft.get_essay_prompts(uid, college.id):
+            ft._essay_prompts(uid, college.id).document(prompt.id).delete()
         ft._colleges(uid).document(college.id).delete()
-    for coll_fn in (ft._research_sources, ft._tasks, ft._conflicts):
+    for coll_fn in (
+        ft._research_sources,
+        ft._tasks,
+        ft._conflicts,
+        ft._materials,
+        ft._essay_matches,
+    ):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
 
@@ -282,6 +294,62 @@ def test_acknowledge_and_resolve_conflict(client: TestClient, user_id: str) -> N
     res = client.post(f"/conflicts/{conflict_id}/resolve", headers=headers)
     assert res.status_code == 200
     assert ft.get_conflicts(user_id)[0].status.value == "resolved"
+
+
+def test_create_and_list_materials(client: TestClient, user_id: str) -> None:
+    headers = {"X-User-Id": user_id}
+
+    created = client.post(
+        "/materials",
+        json={
+            "title": "Why I love robotics",
+            "type": "CommonApp",
+            "topic": "My robotics team",
+            "partialText": "Some draft text about robotics.",
+            "wordCount": 300,
+        },
+        headers=headers,
+    ).json()
+    assert created["title"] == "Why I love robotics"
+    assert created["status"] == "NotStarted"
+
+    listed = client.get("/materials", headers=headers).json()
+    assert len(listed) == 1
+    assert listed[0]["id"] == created["id"]
+
+
+def test_list_essay_prompts_and_matches(client: TestClient, user_id: str) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    [prompt_id] = ft.save_essay_prompts(
+        user_id,
+        [EssayPrompt(college_id=college_id, text="Why Rice?", word_limit=150)],
+    )
+    material_id = ft.save_student_material(
+        user_id,
+        StudentMaterial(title="Why Rice draft", type=MaterialType.SUPPLEMENTAL),
+    )
+    ft.save_essay_matches(
+        user_id,
+        [
+            EssayMatch(
+                prompt_id=prompt_id,
+                college_id=college_id,
+                material_id=material_id,
+                match_score=80,
+                recommendation="adapt",
+                reasoning="Strong topical overlap.",
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    prompts = client.get("/essay-prompts", headers=headers).json()
+    assert len(prompts) == 1
+    assert prompts[0]["text"] == "Why Rice?"
+
+    matches = client.get("/essay-matches", headers=headers).json()
+    assert len(matches) == 1
+    assert matches[0]["recommendation"] == "adapt"
 
 
 def test_recompute_priorities_refreshes_score_and_explanation_together(
