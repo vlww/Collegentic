@@ -180,3 +180,17 @@ export interface EssayMatch {
   reasoning: string;
   computedAt: string | null;
 }
+
+export type AgentRunStatus = "running" | "completed" | "waiting_for_user" | "failed";
+
+export interface AgentRun {
+  id: string;
+  pipelineRunId: string;
+  agentName: string;
+  status: AgentRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  summary: string | null;
+  relatedCollegeIds: string[];
+  errorMessage: string | null;
+}

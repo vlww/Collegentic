@@ -101,7 +101,10 @@ one, and prefer the most recent cycle's information.
 
 def _after_research(callback_context) -> None:
     collect_research_sources_callback(callback_context)
-    log_agent_run_complete(callback_context)
+    source_count = len(callback_context.state.get("sources") or {})
+    log_agent_run_complete(
+        callback_context, f"Found {source_count} source(s) via web search."
+    )
 
 
 college_research_agent = LlmAgent(

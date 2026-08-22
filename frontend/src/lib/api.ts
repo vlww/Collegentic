@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import type {
+  AgentRun,
   College,
   Conflict,
   EssayMatch,
@@ -170,4 +171,8 @@ export function sendOrchestratorMessage(message: string): Promise<{ reply: strin
     method: "POST",
     body: JSON.stringify({ message }),
   });
+}
+
+export function getAgentRuns(): Promise<AgentRun[]> {
+  return apiFetch("/api/agent-runs");
 }

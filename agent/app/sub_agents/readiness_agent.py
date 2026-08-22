@@ -140,7 +140,9 @@ def _persist_readiness(callback_context) -> None:
         )
         ft.save_readiness(user_id, college_id, readiness)
 
-    log_agent_run_complete(callback_context)
+    log_agent_run_complete(
+        callback_context, f"Scored readiness for {len(context_payload)} college(s)."
+    )
 
 
 readiness_explanation_agent = LlmAgent(

@@ -308,7 +308,7 @@ def _persist_requirements_and_sources(callback_context) -> None:
     sources_pool: dict[str, dict] = callback_context.state.get("sources", {})
 
     if not extracted:
-        log_agent_run_complete(callback_context)
+        log_agent_run_complete(callback_context, "No requirements extracted.")
         return
 
     source_doc_id_cache: dict[
@@ -415,7 +415,12 @@ def _persist_requirements_and_sources(callback_context) -> None:
             skipped_colleges,
         )
 
-    log_agent_run_complete(callback_context)
+    needing_verification = sum(1 for r in requirements if r.needs_verification)
+    summary = f"Extracted {len(requirements)} requirement(s)"
+    if needing_verification:
+        summary += f", {needing_verification} flagged for verification"
+    summary += "."
+    log_agent_run_complete(callback_context, summary)
 
 
 requirements_agent = LlmAgent(

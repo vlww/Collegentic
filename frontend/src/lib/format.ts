@@ -26,6 +26,27 @@ export function daysUntil(iso: string): number {
   return Math.round(ms / (1000 * 60 * 60 * 24));
 }
 
+/** A real moment in time (AgentRun.startedAt/completedAt), unlike deadlines
+ * above — shown in the viewer's own local timezone, not pinned to UTC. */
+export function formatTimestamp(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** How long an agent run took, or how long it's been running so far if
+ * `endIso` is null. */
+export function formatDuration(startIso: string, endIso: string | null): string {
+  const ms = (endIso ? new Date(endIso).getTime() : Date.now()) - new Date(startIso).getTime();
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
 /** Earliest of a college's set deadlines, or null if none are known yet. */
 export function nextDeadline(deadlines: {
   ea: string | null;

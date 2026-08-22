@@ -70,14 +70,24 @@ def log_agent_run_start(callback_context: CallbackContext) -> None:
         logger.exception("Failed to log agent run start for %s", agent_name)
 
 
-def log_agent_run_complete(callback_context: CallbackContext) -> None:
+def log_agent_run_complete(
+    callback_context: CallbackContext, summary: str | None = None
+) -> None:
+    """`summary` defaults to a generic "completed" message — fine for a
+    pure context-gathering stage with nothing yet to report. Every stage
+    that actually persists something (the Agent Activity page's whole
+    point is to explain what an agent DID, not just that it ran) passes a
+    concrete, count-based summary instead — see each sub-agent's own
+    persist callback for what it reports."""
     agent_name = callback_context.agent_name
     run_id = callback_context.state.get(f"_agent_run_id__{agent_name}")
     if not run_id:
         return
     try:
         ft.complete_agent_run(
-            callback_context.user_id, run_id, summary=f"{agent_name} completed."
+            callback_context.user_id,
+            run_id,
+            summary=summary or f"{agent_name} completed.",
         )
     except Exception:
         logger.exception("Failed to log agent run completion for %s", agent_name)

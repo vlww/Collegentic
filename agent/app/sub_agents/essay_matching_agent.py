@@ -312,7 +312,11 @@ def _persist_essay_analysis(callback_context) -> None:
     if matches_to_upsert:
         ft.save_essay_matches(user_id, matches_to_upsert)
 
-    log_agent_run_complete(callback_context)
+    log_agent_run_complete(
+        callback_context,
+        f"Structured {len(prompts_to_upsert)} essay prompt(s), "
+        f"found {len(matches_to_upsert)} reuse match(es).",
+    )
 
 
 essay_analysis_agent = LlmAgent(

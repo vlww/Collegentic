@@ -297,14 +297,20 @@ def _persist_conflicts(callback_context) -> None:
     if to_upsert:
         ft.save_conflicts(user_id, to_upsert)
 
+    auto_resolved = 0
     for fingerprint, matches in existing_by_fingerprint.items():
         if fingerprint in fresh_fingerprints:
             continue
         for conflict in matches:
             if conflict.status != ConflictStatus.RESOLVED:
                 ft.update_conflict_status(user_id, conflict.id, ConflictStatus.RESOLVED)
+                auto_resolved += 1
 
-    log_agent_run_complete(callback_context)
+    summary = f"Detected {len(to_upsert)} conflict(s)"
+    if auto_resolved:
+        summary += f", auto-resolved {auto_resolved} no longer present"
+    summary += "."
+    log_agent_run_complete(callback_context, summary)
 
 
 conflict_detection_agent = LlmAgent(

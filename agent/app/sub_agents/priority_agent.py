@@ -140,7 +140,9 @@ def _persist_priorities(callback_context) -> None:
         explanation = explanations_by_id.get(task_id) or info["facts"]
         ft.update_task_priority(user_id, task_id, info["score"], explanation)
 
-    log_agent_run_complete(callback_context)
+    log_agent_run_complete(
+        callback_context, f"Scored priority for {len(context_payload)} task(s)."
+    )
 
 
 priority_explanation_agent = LlmAgent(

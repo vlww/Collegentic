@@ -198,7 +198,7 @@ def _persist_tasks(callback_context) -> None:
         ]
         ft.save_tasks(user_id, tasks)
 
-    log_agent_run_complete(callback_context)
+    log_agent_run_complete(callback_context, f"Planned {len(items)} task(s).")
 
 
 task_planning_agent = LlmAgent(

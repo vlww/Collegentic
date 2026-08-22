@@ -70,6 +70,7 @@ def user_id():
         ft._conflicts,
         ft._materials,
         ft._essay_matches,
+        ft._agent_runs,
     ):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
@@ -350,6 +351,21 @@ def test_list_essay_prompts_and_matches(client: TestClient, user_id: str) -> Non
     matches = client.get("/essay-matches", headers=headers).json()
     assert len(matches) == 1
     assert matches[0]["recommendation"] == "adapt"
+
+
+def test_list_agent_runs(client: TestClient, user_id: str) -> None:
+    run_id = ft.start_agent_run(
+        user_id, pipeline_run_id="run-1", agent_name="conflict_detection_agent"
+    )
+    ft.complete_agent_run(user_id, run_id, summary="Detected 1 conflict(s).")
+    headers = {"X-User-Id": user_id}
+
+    runs = client.get("/agent-runs", headers=headers).json()
+    assert len(runs) == 1
+    assert runs[0]["agentName"] == "conflict_detection_agent"
+    assert runs[0]["pipelineRunId"] == "run-1"
+    assert runs[0]["status"] == "completed"
+    assert runs[0]["summary"] == "Detected 1 conflict(s)."
 
 
 def test_recompute_priorities_refreshes_score_and_explanation_together(

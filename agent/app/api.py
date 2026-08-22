@@ -327,6 +327,16 @@ def list_essay_matches(user_id: str = Depends(require_user_id)) -> list[dict]:
     ]
 
 
+@router.get("/agent-runs")
+def list_agent_runs(user_id: str = Depends(require_user_id)) -> list[dict]:
+    """Powers the Agent Activity page — ft.get_agent_runs already returns
+    every run sorted by startedAt; the frontend groups by pipelineRunId
+    into one card per pipeline execution."""
+    return [
+        run.model_dump(mode="json", by_alias=True) for run in ft.get_agent_runs(user_id)
+    ]
+
+
 @router.get("/research-sources")
 def list_research_sources(
     ids: str, user_id: str = Depends(require_user_id)
