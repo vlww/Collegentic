@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { RootRedirect } from "@/components/RootRedirect";
 import { Onboarding } from "@/pages/Onboarding";
 import { Dashboard } from "@/pages/Dashboard";
 import { Colleges } from "@/pages/Colleges";
@@ -18,7 +19,7 @@ export default function App() {
     <Routes>
       <Route path="/onboarding" element={<Onboarding />} />
       <Route element={<AppLayout />}>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/" element={<RootRedirect />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/colleges" element={<Colleges />} />
         <Route path="/colleges/:collegeId" element={<CollegeDetail />} />

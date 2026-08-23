@@ -28,6 +28,34 @@ export function getUserId(): string {
   return id;
 }
 
+/** A "demo-" prefix on the client-generated id is the only signal Demo Mode
+ * needs — no server round-trip required to know whether the current
+ * session is a demo one. */
+export function isDemoSession(): boolean {
+  return getUserId().startsWith("demo-");
+}
+
+/** Starts a brand-new session under a fresh id — used both by "Try Demo
+ * Mode" (prefixed, then seeded) and "Exit Demo Mode" (plain, unseeded, back
+ * to a normal empty account). Never reuses an existing id: two people
+ * trying Demo Mode must never see or perturb each other's session. */
+function startNewSession(prefix: string): string {
+  const id = `${prefix}${uuidv4()}`;
+  localStorage.setItem(USER_ID_KEY, id);
+  return id;
+}
+
+export function exitDemoMode(): void {
+  startNewSession("");
+}
+
+/** Seeds a full fictional student profile under a fresh demo user id —
+ * see app/demo_data.py for what gets created. */
+export async function startDemoSession(): Promise<void> {
+  startNewSession("demo-");
+  await apiFetch("/api/demo/seed", { method: "POST" });
+}
+
 export interface HealthStatus {
   status: "ok" | "unreachable";
   service?: string;

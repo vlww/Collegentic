@@ -71,9 +71,11 @@ def user_id():
         ft._materials,
         ft._essay_matches,
         ft._agent_runs,
+        ft._recommendations,
     ):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
+    ft._user_doc(uid).delete()
 
 
 def test_missing_user_id_header_returns_400(client: TestClient) -> None:
@@ -351,6 +353,16 @@ def test_list_essay_prompts_and_matches(client: TestClient, user_id: str) -> Non
     matches = client.get("/essay-matches", headers=headers).json()
     assert len(matches) == 1
     assert matches[0]["recommendation"] == "adapt"
+
+
+def test_seed_demo_populates_the_dashboard(client: TestClient, user_id: str) -> None:
+    """Full seed_demo_data behavior is covered by test_demo_data.py —
+    this just checks the route itself wires through correctly."""
+    res = client.post("/demo/seed", headers={"X-User-Id": user_id})
+    assert res.status_code == 200
+
+    colleges = client.get("/colleges", headers={"X-User-Id": user_id}).json()
+    assert len(colleges) == 6
 
 
 def test_list_agent_runs(client: TestClient, user_id: str) -> None:

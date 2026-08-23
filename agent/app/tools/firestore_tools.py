@@ -417,6 +417,30 @@ def start_agent_run(
     return _upsert(_agent_runs(user_id), run)
 
 
+def seed_agent_run(
+    user_id: str,
+    pipeline_run_id: str,
+    agent_name: str,
+    started_at: datetime,
+    completed_at: datetime,
+    summary: str,
+) -> str:
+    """Writes a fully-formed, already-completed AgentRun with explicit
+    (possibly backdated) timestamps — used only by app/demo_data.py to seed
+    a plausible-looking activity history for Demo Mode. Real pipeline runs
+    always go through start_agent_run/complete_agent_run instead, which
+    stamp `now()` themselves at the moment each actually happens."""
+    run = AgentRun(
+        pipeline_run_id=pipeline_run_id,
+        agent_name=agent_name,
+        status=AgentRunStatus.COMPLETED,
+        started_at=started_at,
+        completed_at=completed_at,
+        summary=summary,
+    )
+    return _upsert(_agent_runs(user_id), run)
+
+
 def complete_agent_run(user_id: str, run_id: str, summary: str) -> None:
     _agent_runs(user_id).document(run_id).update(
         {

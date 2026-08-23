@@ -41,6 +41,7 @@ from google.genai import types
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+from app.demo_data import seed_demo_data
 from app.schemas import (
     ConflictStatus,
     MaterialType,
@@ -335,6 +336,19 @@ def list_agent_runs(user_id: str = Depends(require_user_id)) -> list[dict]:
     return [
         run.model_dump(mode="json", by_alias=True) for run in ft.get_agent_runs(user_id)
     ]
+
+
+@router.post("/demo/seed")
+def seed_demo(user_id: str = Depends(require_user_id)) -> dict:
+    """Populates a full fictional student profile for `user_id` —
+    .agents-cli-spec.md Example Use Case 2 ("Try Demo Mode"). Same
+    X-User-Id-scoped pattern as every other route: the frontend mints a
+    fresh id for the demo session (never reuses one) and just calls this
+    once against it, so concurrent judges never collide. See
+    app/demo_data.py for why this is hand-authored data, not a live
+    pipeline run."""
+    seed_demo_data(user_id)
+    return {"status": "ok"}
 
 
 @router.get("/research-sources")
