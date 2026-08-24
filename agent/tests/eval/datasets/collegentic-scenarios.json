@@ -1,0 +1,27 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "single_college_grounded_research",
+      "prompt": {
+        "role": "user",
+        "parts": [{ "text": "I'm applying to Rice University." }]
+      }
+    },
+    {
+      "eval_case_id": "two_colleges_cross_college_analysis",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          { "text": "I'm applying to Princeton University and Stanford University." }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "ambiguous_college_name_asks_for_clarification",
+      "prompt": {
+        "role": "user",
+        "parts": [{ "text": "I'm applying to Miami." }]
+      }
+    }
+  ]
+}

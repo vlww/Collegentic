@@ -10,6 +10,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Regenerable eval output (agents-cli eval generate/grade,
+# tests/eval/capture_traces.py) — the reusable input dataset lives in
+# agent/tests/eval/datasets/ instead, which IS committed.
+agent/artifacts/
+
 # Environments — never commit secrets
 .env
 .env.local

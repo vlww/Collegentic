@@ -2,6 +2,41 @@
 
 This directory contains evaluation datasets for testing agent behavior.
 
+## Collegentic's Eval Suite (Milestone 15)
+
+`collegentic-scenarios.json` encodes .agents-cli-spec.md's 10 Success
+Criteria test scenarios, collapsed into 3 real orchestrator prompts graded
+against 5 behavioral dimensions in one custom metric — see
+`../eval_config.yaml`'s header comment and
+`../collegentic_behavior_quality.py`'s docstring for the full scenario ->
+dimension mapping.
+
+Two of the three cases can't go through the normal `eval generate` path:
+Collegentic's real research pipeline routinely goes quiet longer than
+`eval generate`'s hardcoded 120s inter-event read timeout during a single
+`google_search`-heavy LLM call (no CLI flag overrides this). All three
+cases are instead captured directly via `InMemoryRunner` — the exact same
+`root_agent`, just bypassing the HTTP layer entirely — so the whole suite
+reproduces from two commands:
+
+```bash
+# 1. Run all 3 cases through the real orchestrator directly (a few
+#    minutes — real live web research for 2 of the 3, same as running the
+#    app for real) and write a grade-ready trace file.
+uv run python tests/eval/capture_traces.py
+
+# 2. Grade it.
+agents-cli eval grade --traces tests/eval/datasets/collegentic-live-traces.json --config tests/eval/eval_config.yaml
+```
+
+`collegentic-live-traces.json` is `capture_traces.py`'s own output,
+committed so the suite's actual tested behavior is reviewable without
+re-running live research. `collegentic-scenarios.json` is the equivalent
+prompt-only dataset in the standard `eval generate` inference-input shape
+(kept for reference / for re-running the fast clarification-only case
+through the normal CLI path if ever needed) — it's not what grading
+actually runs against.
+
 ## Running Evaluations
 
 ### Default Dataset
