@@ -66,39 +66,34 @@ itself.
 flowchart TB
     Orchestrator["orchestrator_agent (root LlmAgent)<br/>parses college names, summarizes results"]
 
-    subgraph Intake["college_intake_pipeline (SequentialAgent)"]
-        direction TB
-        Intake1["1. college_intake_agent<br/>which names are new vs. already tracked"]
-        Intake2["2. college_research_agent<br/>google_search — official sources only"]
+    Intake1["1. college_intake_agent<br/>which names are new vs. already tracked"]
+    Intake2["2. college_research_agent<br/>google_search — official sources only"]
+    ReqAgent["3a. requirements_agent<br/>extracts structured, sourced Requirements"]
+    Evaluator["3b. findings_evaluator<br/>flags low-confidence requirements"]
+    Followup["3c. findings_followup_search<br/>targeted re-search — loops back to 3b, max 2 iters"]
+    ConflictP["4a. conflict_pipeline<br/>conflict_agent"]
+    EssayP["4b. essay_matching_pipeline<br/>essay_matching_agent"]
+    Intake5["5. task_planning_pipeline<br/>task_planning_agent"]
+    Intake6["6. priority_pipeline<br/>priority_agent — compute_priority_score + LLM explanation"]
+    Intake7["7. readiness_pipeline<br/>readiness_agent — compute_readiness_score + LLM explanation"]
 
-        subgraph ReqPipeline["3. requirements_pipeline (SequentialAgent)"]
-            direction TB
-            ReqAgent["requirements_agent<br/>extracts structured, sourced Requirements"]
-            subgraph ConfLoop["requirements_confidence_loop (LoopAgent, max 2 iters)"]
-                direction TB
-                Evaluator["findings_evaluator<br/>flags low-confidence requirements"]
-                Followup["findings_followup_search<br/>targeted re-search on low confidence"]
-                Evaluator --> Followup
-            end
-            ReqAgent --> ConfLoop
-        end
-
-        subgraph CrossCollege["4. cross_college_analysis (ParallelAgent)"]
-            direction LR
-            ConflictP["conflict_pipeline<br/>conflict_agent"]
-            EssayP["essay_matching_pipeline<br/>essay_matching_agent"]
-        end
-
-        Intake5["5. task_planning_pipeline<br/>task_planning_agent"]
-        Intake6["6. priority_pipeline<br/>priority_agent — compute_priority_score + LLM explanation"]
-        Intake7["7. readiness_pipeline<br/>readiness_agent — compute_readiness_score + LLM explanation"]
-
-        Intake1 --> Intake2 --> ReqPipeline --> CrossCollege --> Intake5 --> Intake6 --> Intake7
-    end
-
-    Orchestrator -- "AgentTool(college_intake_pipeline)" --> Intake
-    Intake -. "state_delta forwarded back<br/>(findings, conflicts, tasks, readiness)" .-> Orchestrator
+    Orchestrator -- "AgentTool(college_intake_pipeline)" --> Intake1
+    Intake1 --> Intake2 --> ReqAgent --> Evaluator
+    Evaluator --> Followup
+    Followup -. "re-evaluate" .-> Evaluator
+    Evaluator --> ConflictP
+    Evaluator --> EssayP
+    ConflictP --> Intake5
+    EssayP --> Intake5
+    Intake5 --> Intake6 --> Intake7
+    Intake7 -. "state_delta forwarded back<br/>(findings, conflicts, tasks, readiness)" .-> Orchestrator
 ```
+
+Stage 3 (`requirements_pipeline`) is itself a `SequentialAgent` wrapping a
+`LoopAgent` (`requirements_confidence_loop`, capped at 2 iterations); stage 4
+(`cross_college_analysis`) is a `ParallelAgent` — `conflict_pipeline` and
+`essay_matching_pipeline` run concurrently, both reading only what stage 3
+already wrote, then stage 5 waits for both.
 
 Two things worth calling out that aren't obvious from the shape alone:
 
