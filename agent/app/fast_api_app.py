@@ -20,6 +20,8 @@ import google.auth
 from a2a.server.tasks import InMemoryTaskStore
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
 from google.cloud import logging as google_cloud_logging
@@ -38,6 +40,50 @@ allow_origins = (
 )
 
 AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Built by the Docker image's frontend build stage (see Dockerfile) and
+# absent in local dev, where Vite serves the frontend itself — the guard
+# below keeps every route registered here a no-op until that stage exists.
+FRONTEND_DIST_DIR = os.path.join(AGENT_DIR, "frontend_dist")
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Serve the built React app from the same Cloud Run service.
+
+    Registered from inside `lifespan`, after `attach_a2a_routes`, so this
+    catch-all route lands after the A2A JSON-RPC/agent-card routes in
+    Starlette's route list — Starlette matches routes in registration
+    order, and a route added here earlier would silently shadow them.
+    """
+    index_path = os.path.join(FRONTEND_DIST_DIR, "index.html")
+    if not os.path.isfile(index_path):
+        return
+
+    # ADK's web UI (enabled via `web=True` below) registers its own
+    # `GET /` redirect to `/dev-ui/`; drop it so `/` serves the frontend.
+    app.router.routes = [
+        route
+        for route in app.router.routes
+        if not (
+            getattr(route, "path", None) == "/"
+            and "GET" in getattr(route, "methods", set())
+        )
+    ]
+
+    app.mount(
+        "/assets",
+        StaticFiles(directory=os.path.join(FRONTEND_DIST_DIR, "assets")),
+        name="frontend-assets",
+    )
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str) -> FileResponse:
+        candidate = os.path.join(FRONTEND_DIST_DIR, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        # React Router client-side route (or a fresh load of one) — hand
+        # back index.html and let the router in the browser take over.
+        return FileResponse(index_path)
 
 
 @contextlib.asynccontextmanager
@@ -60,6 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_store=InMemoryTaskStore(),
         rpc_path=f"/a2a/{adk_app.name}",
     )
+    _mount_frontend(app)
     yield
 
 
@@ -74,15 +121,18 @@ app: FastAPI = get_fast_api_app(
 )
 app.title = "agent"
 app.description = "API for interacting with the Agent agent"
-app.include_router(api_router)
+app.include_router(api_router, prefix="/api")
 
 
-@app.get("/health")
+@app.get("/api/health")
 def health_check() -> dict[str, str]:
-    """Lightweight liveness check for the frontend and Cloud Run.
+    """Lightweight liveness check for the frontend.
 
-    Does not call Gemini or Firestore — only confirms the API process is up,
-    so it stays free and instant regardless of model/credential configuration.
+    Only registered at /api/health, matching every other frontend apiFetch
+    call — an unprefixed /health would be dead code anyway, since ADK's own
+    get_fast_api_app() already registers that path first and wins. Does not
+    call Gemini or Firestore — only confirms the API process is up, so it
+    stays free and instant regardless of model/credential configuration.
     """
     return {"status": "ok", "service": "collegentic-agent"}
 

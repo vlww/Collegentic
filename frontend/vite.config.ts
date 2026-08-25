@@ -8,10 +8,12 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   // Served at the root, not a subpath. deep-search (the recipe this
   // scaffold started from) serves its React build under ADK's own /app/
-  // mount; we haven't built that Cloud Run subpath-serving story yet
-  // (Milestone 17). A "/app/" base with no matching React Router basename
-  // broke every direct navigation, refresh, and bookmark — found live
+  // mount; a "/app/" base with no matching React Router basename broke
+  // every direct navigation, refresh, and bookmark — found live
   // (Milestone 6) by actually navigating the app, not just building it.
+  // Milestone 17 bundles this build into the same Cloud Run service as
+  // the backend at root (fast_api_app.py's `_mount_frontend`), so root
+  // stays correct in both dev and prod.
   resolve: {
     alias: {
       "@": path.resolve(new URL(".", import.meta.url).pathname, "./src"),
@@ -23,12 +25,14 @@ export default defineConfig({
     // Should be disabled or limited when deployed in untrusted network environments.
     allowedHosts: true,
     proxy: {
-      // Proxy API requests to the backend server
+      // Proxy API requests to the backend server. No path rewrite — the
+      // backend mounts its REST routes under /api itself (fast_api_app.py),
+      // the same prefix used when this app is bundled into the same Cloud
+      // Run service in production, so dev and prod hit the same paths.
       "/api": {
         target: "http://127.0.0.1:8000", // Default backend address
         changeOrigin: true,
         secure: false,
-        rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
   },

@@ -22,6 +22,12 @@ COPY ./pyproject.toml ./README.md ./uv.lock* ./
 
 COPY ./app ./app
 
+# Built by scripts/build_frontend.sh before `agents-cli deploy` (the Cloud
+# Run build context is this directory, so frontend/ isn't visible to Docker
+# otherwise). fast_api_app.py serves it only if this directory exists, so
+# local/eval runs of this image without a frontend build still work.
+COPY ./frontend_dist ./frontend_dist
+
 RUN uv sync --frozen
 
 ARG AGENT_VERSION=0.0.0
