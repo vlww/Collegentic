@@ -36,6 +36,19 @@ export function formatTimestamp(iso: string): string {
   });
 }
 
+/** Date + time together — for grouping headers (e.g. Agent Activity's one
+ * card per pipeline run) where two runs on different days but the same
+ * time-of-day would otherwise render identically under `formatTimestamp`
+ * alone (found live with Demo Mode's seeded two-day activity history). */
+export function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 /** How long an agent run took, or how long it's been running so far if
  * `endIso` is null. */
 export function formatDuration(startIso: string, endIso: string | null): string {

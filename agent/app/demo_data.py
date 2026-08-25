@@ -79,6 +79,18 @@ def _days(now: datetime, n: int) -> datetime:
     return now + timedelta(days=n)
 
 
+def _truncate(text: str, max_len: int) -> str:
+    """Truncates at a word boundary with an ellipsis rather than a hard
+    mid-word cut — found live while auditing task titles on the Dashboard/
+    Tasks/Priorities pages (Milestone 16): a plain `text[:max_len]` produced
+    titles like "...one from a STEM class, one from" and "...policy has
+    shifted ye", which read as broken rather than intentionally shortened."""
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len].rsplit(" ", 1)[0]
+    return f"{truncated}…"
+
+
 def _college_spec(now: datetime) -> list[dict]:
     """One dict per college: deadlines, requirements, and (for the essay
     ones) which StudentMaterial — if any — is a plausible reuse candidate,
@@ -453,12 +465,21 @@ def seed_demo_data(user_id: str) -> None:
             requirement.id = req_id
         all_requirements.extend(college_requirements)
 
-        # Essay prompts + reuse matches, for the essay-type requirements
-        # that specify a candidate material above.
+        # Essay prompts for EVERY essay-type requirement (matching the real
+        # essay_analysis_agent's actual behavior — it structures a prompt
+        # for each one regardless of whether anything matches it, see
+        # essay_matching_agent.py). Found live while auditing the Essay Map
+        # for Milestone 16: seeding a prompt only for requirements with a
+        # deliberate `match_material` left Stanford/Princeton's essay
+        # requirements with no prompt node at all — an orphaned college
+        # node with nothing to its right, not what the real pipeline would
+        # ever produce. Reuse matches are still only created where
+        # `match_material` is set — a college with no plausible material
+        # correctly gets a prompt with no match, same as the real agent.
         for req_spec, requirement in zip(
             spec["requirements"], college_requirements, strict=True
         ):
-            if req_spec["type"] != "essay" or "match_material" not in req_spec:
+            if req_spec["type"] != "essay":
                 continue
             [prompt_id] = ft.save_essay_prompts(
                 user_id,
@@ -472,6 +493,8 @@ def seed_demo_data(user_id: str) -> None:
                     )
                 ],
             )
+            if "match_material" not in req_spec:
+                continue
             ft.save_essay_matches(
                 user_id,
                 [
@@ -589,7 +612,8 @@ def seed_demo_data(user_id: str) -> None:
         )
         tasks.append(
             Task(
-                title=f"{requirement.type.replace('_', ' ').title()}: {requirement.description[:60]}",
+                title=f"{requirement.type.replace('_', ' ').title()}: "
+                f"{_truncate(requirement.description, 60)}",
                 college_id=requirement.college_id,
                 category=requirement.type,
                 deadline=deadline,

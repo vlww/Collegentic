@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { AgentRunStatusBadge } from "@/components/collegentic/AgentRunStatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
 import { getAgentRuns } from "@/lib/api";
-import { formatDuration, formatTimestamp } from "@/lib/format";
+import { formatDateTime, formatDuration } from "@/lib/format";
 import type { AgentRun, AgentRunStatus } from "@/lib/types";
 
 const POLL_INTERVAL_MS = 3000;
@@ -91,7 +91,7 @@ export function AgentActivity() {
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between gap-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {formatTimestamp(group.startedAt)}
+                {formatDateTime(group.startedAt)}
               </p>
               <AgentRunStatusBadge status={group.status} />
             </div>
