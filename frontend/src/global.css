@@ -155,13 +155,21 @@
 
 /* A pastel wash of a college's real (or fallback) accent color — set
    `--school-accent` inline per-row/card (see CollegeAvatar.tsx's
-   collegeAccentColor) and this mixes it faintly into the page background,
-   so it reads as a tint rather than a colored block, and stays legible in
-   both light and dark mode since it's mixed relative to --background
-   rather than a fixed white. */
+   collegeAccentColor). Mixed relative to --background first (so it stays
+   in the right ballpark for light/dark mode), then lightened another 12%
+   toward white on top of that — two rounds of "too dark" feedback landed
+   on this as the actually-pastel result. */
 .school-tint {
-  background-color: color-mix(in srgb, var(--school-accent) 6%, var(--background));
+  background-color: color-mix(
+    in srgb,
+    white 12%,
+    color-mix(in srgb, var(--school-accent) 3%, var(--background))
+  );
 }
 tr.school-tint:hover {
-  background-color: color-mix(in srgb, var(--school-accent) 14%, var(--background));
+  background-color: color-mix(
+    in srgb,
+    white 12%,
+    color-mix(in srgb, var(--school-accent) 8%, var(--background))
+  );
 }
