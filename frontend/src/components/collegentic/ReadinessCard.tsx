@@ -1,5 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { CollegeAvatar, collegeAccentColor } from "./CollegeAvatar";
+import { CollegeAvatar, collegeAccentColor, schoolAccentStyle } from "./CollegeAvatar";
 import { cn } from "@/utils";
 import { formatDate, primaryDeadline } from "@/lib/format";
 import type { College, Readiness } from "@/lib/types";
@@ -45,8 +45,8 @@ export function ReadinessCard({ college, readiness }: { college: Branded; readin
 
   return (
     <Card
-      className="border-t-[3px]"
-      style={{ borderTopColor: collegeAccentColor(college) }}
+      className="school-tint border-t-[3px]"
+      style={{ borderTopColor: collegeAccentColor(college), ...schoolAccentStyle(college) }}
     >
       <CardContent className="space-y-4">
         <div className="flex items-center gap-3">

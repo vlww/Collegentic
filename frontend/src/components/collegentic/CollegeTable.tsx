@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
-import { CollegeAvatar, collegeAccentColor } from "./CollegeAvatar";
+import { CollegeAvatar, collegeAccentColor, schoolAccentStyle } from "./CollegeAvatar";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatDateShort, daysUntil } from "@/lib/format";
 import { cn } from "@/utils";
@@ -201,7 +201,8 @@ export function CollegeTable({
             return (
               <tr
                 key={college.id}
-                className="border-b border-border last:border-0 divide-x divide-border hover:bg-secondary/30 animate-in fade-in slide-in-from-left-1 duration-500"
+                className="school-tint border-b border-border last:border-0 divide-x divide-border animate-in fade-in slide-in-from-left-1 duration-500"
+                style={schoolAccentStyle(college)}
               >
                 <td
                   className={cn(

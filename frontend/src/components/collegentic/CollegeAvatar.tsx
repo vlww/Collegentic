@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { CSSProperties } from "react";
 import { cn } from "@/utils";
 import type { College } from "@/lib/types";
 
@@ -20,6 +21,13 @@ function fallbackColor(name: string): string {
  * college, shared by every place that wants to color-code by school. */
 export function collegeAccentColor(college: Branded): string {
   return college.schoolColors.primary || fallbackColor(college.name);
+}
+
+/** Sets the `--school-accent` CSS variable `.school-tint` (global.css)
+ * mixes into a pastel row/card background — spread this onto a `style`
+ * prop alongside any other inline styles that element needs. */
+export function schoolAccentStyle(college: Branded): CSSProperties {
+  return { "--school-accent": collegeAccentColor(college) } as CSSProperties;
 }
 
 /** logobrands.com's source images (see requirements_agent.py's
@@ -58,9 +66,10 @@ export function CollegeAvatar({
     return (
       <span
         className={cn(
-          "flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white p-1 ring-1 ring-border",
+          "flex shrink-0 items-center justify-center overflow-hidden rounded-full border-2 bg-white p-1",
           SIZE_CLASSES[size]
         )}
+        style={{ borderColor: collegeAccentColor(college) }}
       >
         <img
           src={college.logoUrl}
