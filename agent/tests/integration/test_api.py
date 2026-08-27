@@ -253,6 +253,40 @@ def test_recompute_readiness_refreshes_score_and_explanation_together(
     assert result[0]["readiness"]["computedAt"] is not None
 
 
+def test_refresh_college_logos_updates_an_existing_college(
+    client: TestClient, user_id: str
+) -> None:
+    """A college created (and "researched", by having a Requirement doc)
+    under an old, wrong logo must pick up the current picker's answer
+    without needing a full re-research pass — this is the whole point of
+    /colleges/refresh-logos: college_intake_agent only re-researches a
+    college with zero Requirement docs, so a logo-picker fix alone would
+    otherwise never reach an already-researched college."""
+    college_id = ft.save_college(
+        user_id,
+        College(name="Rice University", logo_url="https://example.com/wrong-logo.png"),
+    )
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why Rice",
+                confidence=ConfidenceLevel.HIGH,
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.post("/colleges/refresh-logos", headers=headers).json()
+    assert len(result) == 1
+    assert result[0]["id"] == college_id
+    assert result[0]["logoUrl"] is not None
+    assert result[0]["logoUrl"] != "https://example.com/wrong-logo.png"
+    assert result[0]["logoUrl"].startswith("https://upload.wikimedia.org/")
+
+
 def test_list_conflicts(client: TestClient, user_id: str) -> None:
     college_id = ft.save_college(user_id, College(name="Rice University"))
     other_college_id = ft.save_college(user_id, College(name="Baylor University"))

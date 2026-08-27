@@ -56,6 +56,7 @@ def user_id():
     ):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
+    ft._user_doc(uid).delete()
 
 
 def test_save_and_get_college_round_trip(user_id: str) -> None:
@@ -162,14 +163,28 @@ def test_save_recommendation_round_trip(user_id: str) -> None:
     rec_id = ft.save_recommendation(
         user_id,
         Recommendation(
-            recommender_type=RecommenderType.STEM,
+            recommender_type=RecommenderType.TEACHER_STEM,
             college_ids=["mit", "rice"],
         ),
     )
     recs = ft.get_recommendations(user_id)
     assert len(recs) == 1
     assert recs[0].id == rec_id
-    assert recs[0].status.value == "NotIdentified"
+    assert recs[0].status.value == "NotRequested"
+
+
+def test_delete_recommendation(user_id: str) -> None:
+    rec_id = ft.save_recommendation(
+        user_id, Recommendation(recommender_type=RecommenderType.OTHER)
+    )
+    ft.delete_recommendation(user_id, rec_id)
+    assert ft.get_recommendations(user_id) == []
+
+
+def test_test_scores_submitted_defaults_false_then_round_trips(user_id: str) -> None:
+    assert ft.get_test_scores_submitted(user_id) is False
+    ft.set_test_scores_submitted(user_id, True)
+    assert ft.get_test_scores_submitted(user_id) is True
 
 
 def test_get_research_sources_by_ids(user_id: str) -> None:

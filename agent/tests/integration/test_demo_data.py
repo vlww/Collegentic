@@ -28,7 +28,7 @@ import pytest
 from app.demo_data import seed_demo_data
 from app.schemas import Requirement
 from app.tools import firestore_tools as ft
-from app.tools.scoring import compute_readiness_score
+from app.tools.scoring import compute_readiness_score, recommendations_for_college
 
 
 @pytest.fixture
@@ -101,10 +101,16 @@ def test_seed_demo_data_matches_spec_requirements(user_id: str) -> None:
     # apart can land on either side of a day boundary and swing the score
     # by up to ~1 point (same `.days` sensitivity compute_priority_score
     # has had since Milestone 8) — not a bug, just two different `now()`s.
+    test_scores_submitted = ft.get_test_scores_submitted(user_id)
     for college in colleges:
         assert college.readiness.computed_at is not None
         college_requirements = [r for r in requirements if r.college_id == college.id]
-        expected = compute_readiness_score(college_requirements, college.deadlines)
+        expected = compute_readiness_score(
+            college_requirements,
+            college.deadlines,
+            recommendations_for_college(recommendations, college.id),
+            test_scores_submitted,
+        )
         assert college.readiness.score == pytest.approx(expected.score, abs=2.0)
 
     # Tasks planned and scored.

@@ -30,7 +30,7 @@ export function Readiness() {
       <div className="flex items-start justify-between gap-4">
         <PageHeader
           title="Application Readiness"
-          description="An explainable readiness score per college — weighted completion of required components, not an arbitrary percentage."
+          description="How ready you are for each college, and why."
         />
         <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
           <RefreshCw className={refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
@@ -55,7 +55,7 @@ export function Readiness() {
                 >
                   {college.name}
                 </Link>
-                <ReadinessCard collegeName={college.name} readiness={college.readiness} />
+                <ReadinessCard college={college} readiness={college.readiness} />
               </CardContent>
             </Card>
           ))}

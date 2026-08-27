@@ -43,6 +43,7 @@ from datetime import datetime, timedelta
 from app.schemas import (
     College,
     CollegeDeadlines,
+    SchoolColors,
     ConfidenceLevel,
     Conflict,
     ConflictSeverity,
@@ -67,7 +68,11 @@ from app.schemas import (
     UserProfile,
 )
 from app.tools import firestore_tools as ft
-from app.tools.scoring import compute_priority_score, compute_readiness_score
+from app.tools.scoring import (
+    compute_priority_score,
+    compute_readiness_score,
+    recommendations_for_college,
+)
 
 # Requirement types task_planning_agent never turns into a Task for — the
 # deadline itself is context, not an action. Mirrors the real agent's
@@ -101,6 +106,8 @@ def _college_spec(now: datetime) -> list[dict]:
         {
             "name": "MIT",
             "deadlines": CollegeDeadlines(ea=_days(now, 74), rd=_days(now, 135)),
+            "school_colors": SchoolColors(primary="#750014", secondary="#8B959E"),
+            "logo_url": "https://upload.wikimedia.org/wikipedia/en/thumb/4/44/MIT_Seal.svg/330px-MIT_Seal.svg.png",
             "requirements": [
                 {
                     "type": "essay",
@@ -109,7 +116,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "completion_percentage": 85,
                     "match_material": 0,
                     "match_score": 88,
-                    "match_reasoning": "Directly addresses personal growth and identity — a close, "
+                    "match_reasoning": "Directly addresses personal growth and identity, a close, "
                     "natural fit for MIT's open-ended framing.",
                 },
                 {
@@ -130,10 +137,11 @@ def _college_spec(now: datetime) -> list[dict]:
                     "humanities teacher.",
                     "status": RequirementStatus.PLANNING,
                     "completion_percentage": 15,
+                    "recommendation_count": 2,
                 },
                 {
                     "type": "testing",
-                    "description": "SAT/ACT test-optional for this cycle — policy has shifted "
+                    "description": "SAT/ACT test-optional for this cycle, policy has shifted "
                     "year to year, worth confirming before relying on it.",
                     "required": False,
                     "status": RequirementStatus.NOT_STARTED,
@@ -152,6 +160,8 @@ def _college_spec(now: datetime) -> list[dict]:
         {
             "name": "Princeton University",
             "deadlines": CollegeDeadlines(ea=_days(now, 74), rd=_days(now, 135)),
+            "school_colors": SchoolColors(primary="#E77500", secondary="#000000"),
+            "logo_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d0/Princeton_seal.svg/330px-Princeton_seal.svg.png",
             "requirements": [
                 {
                     "type": "essay",
@@ -167,10 +177,11 @@ def _college_spec(now: datetime) -> list[dict]:
                 },
                 {
                     "type": "recommendation",
-                    "description": "2 teacher recommendations — one from a STEM class, one from "
+                    "description": "2 teacher recommendations, one from a STEM class, one from "
                     "humanities or social science.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
+                    "recommendation_count": 2,
                 },
                 {
                     "type": "financial_aid",
@@ -182,6 +193,8 @@ def _college_spec(now: datetime) -> list[dict]:
         {
             "name": "Stanford University",
             "deadlines": CollegeDeadlines(ea=_days(now, 74), rd=_days(now, 139)),
+            "school_colors": SchoolColors(primary="#8C1515"),
+            "logo_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b5/Seal_of_Leland_Stanford_Junior_University.svg/330px-Seal_of_Leland_Stanford_Junior_University.svg.png",
             "requirements": [
                 {
                     "type": "essay",
@@ -201,12 +214,15 @@ def _college_spec(now: datetime) -> list[dict]:
                     "plus one from your counselor.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
+                    "recommendation_count": 2,
                 },
             ],
         },
         {
             "name": "Rice University",
             "deadlines": CollegeDeadlines(ed=_days(now, 74), rd=_days(now, 138)),
+            "school_colors": SchoolColors(primary="#00205B", secondary="#7C7E7F"),
+            "logo_url": "https://upload.wikimedia.org/wikipedia/en/thumb/c/c7/Rice_University_seal.svg/330px-Rice_University_seal.svg.png",
             "requirements": [
                 {
                     "type": "essay",
@@ -222,7 +238,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "completion_percentage": 45,
                     "match_material": 1,
                     "match_score": 82,
-                    "match_reasoning": "Strong thematic overlap — both center on the same "
+                    "match_reasoning": "Strong thematic overlap, both center on the same "
                     "community and the applicant's role in it.",
                 },
                 {
@@ -236,12 +252,18 @@ def _college_spec(now: datetime) -> list[dict]:
                     "description": "1 counselor recommendation + 2 academic teacher evaluations.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
+                    "recommendation_count": 3,
                 },
             ],
         },
         {
             "name": "University of Texas at Austin",
             "deadlines": CollegeDeadlines(rd=_days(now, 100)),
+            "school_colors": SchoolColors(primary="#BF5700", secondary="#FFFFFF"),
+            # Texas is an SEC school, so the live picker sources this one
+            # from logobrands.com (requirements_agent._fetch_college_logo),
+            # not Wikipedia — matched here for consistency with demo data.
+            "logo_url": "https://logobrands.com/cdn/shop/collections/Texas_7a475bd3-63d9-4047-8911-c66b8e8bba9c.png",
             "requirements": [
                 {
                     "type": "essay",
@@ -267,6 +289,8 @@ def _college_spec(now: datetime) -> list[dict]:
         {
             "name": "Harvard University",
             "deadlines": CollegeDeadlines(ea=_days(now, 74), rd=_days(now, 135)),
+            "school_colors": SchoolColors(primary="#A51C30", secondary="#1E1E1E"),
+            "logo_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/Harvard_University_coat_of_arms.svg/330px-Harvard_University_coat_of_arms.svg.png",
             "requirements": [
                 {
                     "type": "essay",
@@ -284,7 +308,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "completion_percentage": 0,
                     "match_material": 1,
                     "match_score": 75,
-                    "match_reasoning": "Same community-and-role framing as Rice's prompt — a "
+                    "match_reasoning": "Same community-and-role framing as Rice's prompt, a "
                     "solid starting point, though Harvard's word limit is tighter.",
                 },
                 {
@@ -293,6 +317,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "areas.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
+                    "recommendation_count": 2,
                 },
             ],
         },
@@ -305,7 +330,7 @@ def _materials_spec() -> list[dict]:
             "title": "Personal Statement Draft",
             "type": MaterialType.COMMON_APP,
             "topic": "Growing up between two languages and cultures",
-            "partial_text": "I've spent my whole life translating — not just words, but "
+            "partial_text": "I've spent my whole life translating, not just words, but "
             "worlds. At home, one language; at school, another. This essay is about "
             "what that in-between space taught me about identity and resilience.",
             "completion_percentage": 90,
@@ -326,7 +351,7 @@ def _materials_spec() -> list[dict]:
             "status": MaterialStatus.IN_PROGRESS,
         },
         {
-            "title": "Robotics Team — Activity Description",
+            "title": "Robotics Team, Activity Description",
             "type": MaterialType.ACTIVITY_DESCRIPTION,
             "topic": "Captaining our FIRST Robotics team through a rebuild season",
             "partial_text": "Captain, School Robotics Team (10th-12th grade). Led a full "
@@ -347,14 +372,14 @@ def _requirement_gap_recommendations(now: datetime) -> list[Recommendation]:
     return [
         Recommendation(
             recommender_name="Ms. Chen (AP Physics)",
-            recommender_type=RecommenderType.STEM,
-            status=RecommendationStatus.RECEIVED,
+            recommender_type=RecommenderType.TEACHER_STEM,
+            status=RecommendationStatus.SUBMITTED,
             college_ids=[],  # filled in by seed_demo_data with real college ids
             requested_at=_days(now, -30),
         ),
         Recommendation(
             recommender_name="Mr. Alvarez (AP Literature)",
-            recommender_type=RecommenderType.HUMANITIES,
+            recommender_type=RecommenderType.TEACHER_HUMANITIES,
             status=RecommendationStatus.REQUESTED,
             college_ids=[],
             requested_at=_days(now, -10),
@@ -362,7 +387,7 @@ def _requirement_gap_recommendations(now: datetime) -> list[Recommendation]:
         Recommendation(
             recommender_name="School Counselor",
             recommender_type=RecommenderType.COUNSELOR,
-            status=RecommendationStatus.PLANNED,
+            status=RecommendationStatus.NOT_REQUESTED,
             college_ids=[],
         ),
     ]
@@ -406,9 +431,30 @@ def seed_demo_data(user_id: str) -> None:
     for spec in college_specs:
         college_id = ft.save_college(
             user_id,
-            College(name=spec["name"], deadlines=spec["deadlines"]),
+            College(
+                name=spec["name"],
+                deadlines=spec["deadlines"],
+                school_colors=spec["school_colors"],
+                logo_url=spec.get("logo_url"),
+            ),
         )
         college_ids[spec["name"]] = college_id
+
+    # Recommendations + test scores are seeded here, before the readiness
+    # computation loop below, since both are now account-wide inputs
+    # compute_readiness_score needs for EVERY college — not something a
+    # college's own Requirement docs carry any more (see app/tools/
+    # scoring.py). Attach the two identified recommenders to the colleges
+    # that already have a letter in motion; Princeton/Stanford/Harvard's
+    # SECOND recommender stays unidentified — that gap is what the conflict
+    # below is actually about.
+    recs = _requirement_gap_recommendations(now)
+    recs[0].college_ids = [college_ids["MIT"], college_ids["Stanford University"]]
+    recs[1].college_ids = [college_ids["Princeton University"]]
+    recs[2].college_ids = [college_ids["Rice University"]]
+    for rec in recs:
+        rec.id = ft.save_recommendation(user_id, rec)
+    ft.set_test_scores_submitted(user_id, True)
 
     for spec in college_specs:
         college_id = college_ids[spec["name"]]
@@ -458,6 +504,7 @@ def seed_demo_data(user_id: str) -> None:
                 confidence=req_spec.get("confidence", ConfidenceLevel.HIGH),
                 needs_verification=req_spec.get("needs_verification", False),
                 source_ids=source_ids,
+                recommendation_count=req_spec.get("recommendation_count"),
             )
             college_requirements.append(requirement)
         req_ids = ft.save_requirements(user_id, college_requirements)
@@ -514,9 +561,14 @@ def seed_demo_data(user_id: str) -> None:
             )
 
         # Readiness — computed for real, not typed in, so it stays honest
-        # relative to the requirements actually seeded above.
+        # relative to the requirements/recommendations/test-scores actually
+        # seeded above.
         result = compute_readiness_score(
-            college_requirements, spec["deadlines"], now=now
+            college_requirements,
+            spec["deadlines"],
+            recommendations_for_college(recs, college_id),
+            test_scores_submitted=True,
+            now=now,
         )
         ft.save_readiness(
             user_id,
@@ -524,7 +576,6 @@ def seed_demo_data(user_id: str) -> None:
             Readiness(
                 score=result.score,
                 breakdown=ReadinessBreakdown(
-                    requirements=result.requirements,
                     essays=result.essays,
                     recommendations=result.recommendations,
                     testing=result.testing,
@@ -534,17 +585,6 @@ def seed_demo_data(user_id: str) -> None:
                 computed_at=now,
             ),
         )
-
-    # Recommendations: attach the two identified recommenders to the
-    # colleges that already have a letter in motion; Princeton/Stanford/
-    # Harvard's SECOND recommender stays unidentified — that gap is what
-    # the conflict below is actually about.
-    recs = _requirement_gap_recommendations(now)
-    recs[0].college_ids = [college_ids["MIT"], college_ids["Stanford University"]]
-    recs[1].college_ids = [college_ids["Princeton University"]]
-    recs[2].college_ids = [college_ids["Rice University"]]
-    for rec in recs:
-        ft.save_recommendation(user_id, rec)
 
     ft.save_conflicts(
         user_id,
@@ -557,15 +597,11 @@ def seed_demo_data(user_id: str) -> None:
                     college_ids["Harvard University"],
                 ],
                 description="Princeton, Stanford, and Harvard each still need a second "
-                "teacher recommendation, and their stated preferences differ: Princeton "
-                "wants specifically one STEM and one humanities recommender, Stanford asks "
-                "for a core-academic-subject teacher plus a counselor, and Harvard just "
-                "wants two different academic areas represented. No second recommender is "
-                "identified for any of the three yet.",
+                "teacher recommendation, and their preferences differ slightly. No second "
+                "recommender is identified for any of the three yet.",
                 recommendation="Ask a humanities or social-science teacher who knows you "
-                "well for your second letter — paired with Ms. Chen's STEM letter, that "
-                "single choice would satisfy all three schools' actual requirements, since "
-                "none of them need a specific department beyond 'different from the first.'",
+                "well for your second letter. Paired with Ms. Chen's STEM letter, that "
+                "single choice satisfies all three schools' requirements.",
                 severity=ConflictSeverity.HIGH,
                 related_requirement_ids=[
                     r.id

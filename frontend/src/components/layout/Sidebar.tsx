@@ -1,13 +1,14 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/utils";
+import logo from "@/assets/logo.png";
 import { NAV_ITEMS } from "./nav";
 
 export function Sidebar() {
   return (
     <aside className="hidden md:flex md:w-60 md:flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border shrink-0">
-      <div className="h-16 flex items-center gap-2 px-5 border-b border-sidebar-border">
-        <span className="h-2.5 w-2.5 rounded-sm bg-sidebar-primary" />
-        <span className="font-semibold tracking-tight text-lg">Collegentic</span>
+      <div className="h-16 flex items-center gap-2.5 px-4 border-b border-sidebar-border">
+        <img src={logo} alt="" className="h-9 w-9 shrink-0 object-contain" />
+        <span className="font-semibold tracking-tight text-xl">Collegentic</span>
       </div>
       <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
         {NAV_ITEMS.map(({ to, label, icon: Icon }) => (

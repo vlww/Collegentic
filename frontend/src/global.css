@@ -88,14 +88,16 @@
   --orange-foreground: #FFFFFF;
   --orange-tint: #FCEBD6;
 
-  /* Sidebar/header chrome stays navy in both themes — the structural anchor. */
-  --sidebar: #0B1F3A;
-  --sidebar-foreground: #E7ECF3;
+  /* Sidebar/header chrome: a light, muted blue-grey field with dark navy
+     text, so the logo's navy silhouette and nav labels read as ink-on-mist
+     rather than the app's usual navy-on-light structural chrome. */
+  --sidebar: #E7E9EF;
+  --sidebar-foreground: #16294A;
   --sidebar-primary: #DD7A16;
   --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #13294B;
-  --sidebar-accent-foreground: #FFFFFF;
-  --sidebar-border: #1D3860;
+  --sidebar-accent: #D6D9E2;
+  --sidebar-accent-foreground: #0B1F3A;
+  --sidebar-border: #D6D9E2;
   --sidebar-ring: #DD7A16;
 }
 
@@ -132,13 +134,13 @@
   --orange-foreground: #14100A;
   --orange-tint: #2A2013;
 
-  --sidebar: #060F1F;
+  --sidebar: #101F35;
   --sidebar-foreground: #E7ECF3;
   --sidebar-primary: #E8871E;
   --sidebar-primary-foreground: #14100A;
-  --sidebar-accent: #101F35;
+  --sidebar-accent: #1B2E4D;
   --sidebar-accent-foreground: #FFFFFF;
-  --sidebar-border: #1D3860;
+  --sidebar-border: #2A4670;
   --sidebar-ring: #E8871E;
 }
 

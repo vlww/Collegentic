@@ -118,7 +118,7 @@ export function AddMaterialForm({ onAdded }: AddMaterialFormProps) {
             </label>
             <Textarea
               id="material-text"
-              placeholder="Paste what you have so far — Collegentic only reads this to judge reuse-fit against new prompts, it never edits it."
+              placeholder="Paste what you have so far. Collegentic only reads it, never edits it."
               value={partialText}
               onChange={(e) => setPartialText(e.target.value)}
               disabled={loading}

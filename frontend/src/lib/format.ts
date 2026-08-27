@@ -6,11 +6,23 @@
  * display to the date that was actually stored.
  */
 export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   return new Date(iso).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** Same UTC-pinned date as {@link formatDate} but without the year — for
+ * dense table columns (e.g. per-deadline-type cells) where the year is
+ * implied by the application cycle and would just be visual noise. */
+export function formatDateShort(iso: string | null): string {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
     timeZone: "UTC",
   });
 }
@@ -72,4 +84,13 @@ export function nextDeadline(deadlines: {
   );
   if (dates.length === 0) return null;
   return dates.reduce((earliest, d) => (d < earliest ? d : earliest));
+}
+
+/** The application's main round deadline — Early Action if the college has
+ * one, otherwise Regular Decision. Early Decision and the financial-aid
+ * date are deliberately not considered here: unlike {@link nextDeadline},
+ * this isn't "whatever's soonest," it's "the one deadline" a student would
+ * name if asked when this application is due. */
+export function primaryDeadline(deadlines: { ea: string | null; rd: string | null }): string | null {
+  return deadlines.ea ?? deadlines.rd;
 }

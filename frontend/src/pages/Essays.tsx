@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { AddMaterialForm } from "@/components/collegentic/AddMaterialForm";
+import { EssayNetworkGraph } from "@/components/collegentic/EssayNetworkGraph";
+import { RequirementsList } from "@/components/collegentic/RequirementsList";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -8,8 +10,17 @@ import {
   getEssayMatches,
   getEssayPrompts,
   getMaterials,
+  getRequirements,
+  recomputeReadiness,
 } from "@/lib/api";
-import type { College, EssayMatch, EssayPrompt, StudentMaterial } from "@/lib/types";
+import type {
+  College,
+  EssayMatch,
+  EssayPrompt,
+  Requirement,
+  RequirementStatus,
+  StudentMaterial,
+} from "@/lib/types";
 
 const TYPE_LABEL: Record<StudentMaterial["type"], string> = {
   CommonApp: "Common App Essay",
@@ -25,12 +36,16 @@ export function Essays() {
   const [matches, setMatches] = useState<EssayMatch[]>([]);
   const [prompts, setPrompts] = useState<EssayPrompt[]>([]);
   const [colleges, setColleges] = useState<College[]>([]);
+  const [requirements, setRequirements] = useState<Requirement[]>([]);
 
   const load = useCallback(() => {
     getMaterials().then(setMaterials);
     getEssayMatches().then(setMatches);
     getEssayPrompts().then(setPrompts);
-    getColleges().then(setColleges);
+    getColleges().then(async (result) => {
+      setColleges(result);
+      setRequirements(result.length > 0 ? await getRequirements(result.map((c) => c.id)) : []);
+    });
   }, []);
 
   useEffect(() => {
@@ -40,12 +55,22 @@ export function Essays() {
   const promptById = Object.fromEntries(prompts.map((p) => [p.id, p]));
   const materialById = Object.fromEntries((materials ?? []).map((m) => [m.id, m]));
   const collegeById = Object.fromEntries(colleges.map((c) => [c.id, c]));
+  const essayRequirements = requirements.filter((r) => r.type === "essay");
+
+  async function handleProgressChange(requirementId: string, status: RequirementStatus) {
+    setRequirements((prev) =>
+      prev.map((r) => (r.id === requirementId ? { ...r, status } : r))
+    );
+    // Feeds compute_readiness_score — essays are now the largest-weighted
+    // readiness category, so this should land promptly, not eventually.
+    await recomputeReadiness();
+  }
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Essays"
-        description="Your existing essays, activities, and notes — titles, topics, and completion percentage, not a document editor."
+        description="Your essays, activities, and notes, not a document editor."
       />
 
       <AddMaterialForm onAdded={load} />
@@ -54,8 +79,7 @@ export function Essays() {
         <h2 className="text-sm font-semibold mb-3">Your Materials</h2>
         {materials !== null && materials.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            No materials yet — add an essay, activity, or note above so Collegentic can
-            suggest which prompts it might fit.
+            Add an essay, activity, or note above to get started.
           </p>
         )}
         {materials !== null && materials.length > 0 && (
@@ -81,12 +105,25 @@ export function Essays() {
         )}
       </div>
 
+      {essayRequirements.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold mb-3">Essay Progress</h2>
+          <p className="text-sm text-muted-foreground mb-3">
+            Every college's actual essay requirement, tracked one at a time.
+          </p>
+          <RequirementsList
+            requirements={essayRequirements}
+            collegeName={(id) => collegeById[id]?.name ?? id}
+            onProgressChange={handleProgressChange}
+          />
+        </div>
+      )}
+
       {matches.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold mb-3">Suggested Matches</h2>
           <p className="text-sm text-muted-foreground mb-3">
-            Where an existing material might fit a new prompt — a full network view is
-            coming to the Essay Map page.
+            Where an existing material might fit a new prompt.
           </p>
           <div className="divide-y divide-border rounded-lg border border-border">
             {matches.map((match) => {
@@ -105,7 +142,7 @@ export function Essays() {
                     </Badge>
                   </div>
                   <p className="text-sm text-foreground">
-                    {material?.title ?? "Material"} — {Math.round(match.matchScore)}% fit
+                    {material?.title ?? "Material"} · {Math.round(match.matchScore)}% fit
                   </p>
                   <p className="text-sm text-muted-foreground">{match.reasoning}</p>
                 </div>
@@ -117,10 +154,25 @@ export function Essays() {
 
       <Card className="border-0 shadow-none bg-transparent">
         <CardContent className="px-0 text-xs text-muted-foreground">
-          Collegentic never writes, rewrites, or edits your essay text — only reads it to
-          judge reuse-fit against new prompts.
+          Collegentic never writes or edits your essay text, only reads it for reuse-fit.
         </CardContent>
       </Card>
+
+      {colleges.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold mb-3">Essay Map</h2>
+          <p className="text-sm text-muted-foreground mb-3">
+            A network view of your materials, the prompts they match, and how strong each
+            match is.
+          </p>
+          <EssayNetworkGraph
+            colleges={colleges}
+            prompts={prompts}
+            materials={materials ?? []}
+            matches={matches}
+          />
+        </div>
+      )}
     </div>
   );
 }

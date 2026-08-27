@@ -17,7 +17,6 @@ export interface CollegeDeadlines {
 }
 
 export interface ReadinessBreakdown {
-  requirements: number;
   essays: number;
   recommendations: number;
   testing: number;
@@ -70,6 +69,7 @@ export interface Requirement {
   confidence: ConfidenceLevel;
   needsVerification: boolean;
   sourceIds: string[];
+  studentNotes: string | null;
 }
 
 export interface ResearchSource {
@@ -179,6 +179,30 @@ export interface EssayMatch {
   recommendation: MatchRecommendation;
   reasoning: string;
   computedAt: string | null;
+}
+
+export type RecommenderType =
+  | "TeacherSTEM"
+  | "TeacherHumanities"
+  | "Counselor"
+  | "Employer"
+  | "Other";
+
+export type RecommendationStatus = "NotRequested" | "Requested" | "Submitted";
+
+/** Sentinel inside `collegeIds` meaning "every college I'm tracking" — the
+ * My Progress recommenders table's "All" option, resolved dynamically
+ * against the current college list rather than a frozen snapshot. Mirrors
+ * app/schemas.py's RECOMMENDATION_ALL_COLLEGES. */
+export const RECOMMENDATION_ALL_COLLEGES = "ALL";
+
+export interface Recommendation {
+  id: string;
+  recommenderName: string | null;
+  recommenderType: RecommenderType;
+  status: RecommendationStatus;
+  collegeIds: string[];
+  requestedAt: string | null;
 }
 
 export type AgentRunStatus = "running" | "completed" | "waiting_for_user" | "failed";

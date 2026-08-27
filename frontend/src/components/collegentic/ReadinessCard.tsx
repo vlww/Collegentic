@@ -1,9 +1,10 @@
 import { Card, CardContent } from "@/components/ui/card";
+import { CollegeAvatar, collegeAccentColor } from "./CollegeAvatar";
 import { cn } from "@/utils";
-import type { Readiness } from "@/lib/types";
+import { formatDate, primaryDeadline } from "@/lib/format";
+import type { College, Readiness } from "@/lib/types";
 
 const BREAKDOWN_LABEL: Record<keyof Readiness["breakdown"], string> = {
-  requirements: "Other requirements",
   essays: "Essays",
   recommendations: "Recommendations",
   testing: "Testing",
@@ -22,30 +23,40 @@ function barColor(score: number): string {
   return "bg-destructive";
 }
 
+type Branded = Pick<College, "name" | "logoUrl" | "schoolColors" | "deadlines">;
+
 /** Per-college readiness display — .agents-cli-spec.md § Application
  * Readiness Agent's own worked example ("MIT — 82% Ready — Requirements:
  * 95%, Essays: 70%, ..."). Shared by the Readiness page (every college) and
  * CollegeDetail (one college), so the breakdown reads identically in both
- * places. */
-export function ReadinessCard({ collegeName, readiness }: { collegeName: string; readiness: Readiness }) {
+ * places. The top accent bar and avatar use the college's real school
+ * colors/logo (Milestone 19) when research has found them, same as
+ * CollegeTable — a consistent visual identity per school across the app. */
+export function ReadinessCard({ college, readiness }: { college: Branded; readiness: Readiness }) {
   if (readiness.computedAt === null) {
     return (
       <Card>
         <CardContent className="text-sm text-muted-foreground">
-          Not scored yet — readiness is computed once {collegeName} has been researched.
+          Not scored yet, {college.name} hasn't been researched.
         </CardContent>
       </Card>
     );
   }
 
   return (
-    <Card>
+    <Card
+      className="border-t-[3px]"
+      style={{ borderTopColor: collegeAccentColor(college) }}
+    >
       <CardContent className="space-y-4">
-        <div className="flex items-baseline gap-2">
-          <span className={cn("text-3xl font-semibold tabular-nums", scoreColor(readiness.score))}>
-            {Math.round(readiness.score)}%
-          </span>
-          <span className="text-sm text-muted-foreground">ready</span>
+        <div className="flex items-center gap-3">
+          <CollegeAvatar college={college} size="md" />
+          <div className="flex items-baseline gap-2">
+            <span className={cn("text-3xl font-semibold tabular-nums", scoreColor(readiness.score))}>
+              {Math.round(readiness.score)}%
+            </span>
+            <span className="text-sm text-muted-foreground">ready</span>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -68,9 +79,9 @@ export function ReadinessCard({ collegeName, readiness }: { collegeName: string;
           })}
         </div>
 
-        {readiness.explanation && (
-          <p className="text-sm text-muted-foreground">{readiness.explanation}</p>
-        )}
+        <p className="text-sm text-muted-foreground">
+          Deadline: {formatDate(primaryDeadline(college.deadlines))}
+        </p>
       </CardContent>
     </Card>
   );

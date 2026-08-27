@@ -168,6 +168,8 @@ RULES:
 - source_requirement_id MUST be the exact "id" field from the matching
   requirement above.
 - required: copy the source requirement's own "required" field exactly.
+- Write `title` and `description` as short, plain text: no markdown
+  formatting, no em dashes.
 
 Respond with a single raw JSON object matching the TaskPlan schema."""
 

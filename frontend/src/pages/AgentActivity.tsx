@@ -3,8 +3,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { AgentRunStatusBadge } from "@/components/collegentic/AgentRunStatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
 import { getAgentRuns } from "@/lib/api";
+import { groupByPipeline } from "@/lib/agentRuns";
 import { formatDateTime, formatDuration } from "@/lib/format";
-import type { AgentRun, AgentRunStatus } from "@/lib/types";
+import type { AgentRun } from "@/lib/types";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -13,40 +14,6 @@ function humanizeAgentName(name: string): string {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
-}
-
-interface PipelineGroup {
-  pipelineRunId: string;
-  runs: AgentRun[];
-  startedAt: string;
-  status: AgentRunStatus;
-}
-
-/** One card per pipeline execution (e.g. one "add these colleges"
- * submission) — every agent that ran within it, oldest first. Most recent
- * pipeline run first. */
-function groupByPipeline(runs: AgentRun[]): PipelineGroup[] {
-  const byId: Record<string, AgentRun[]> = {};
-  for (const run of runs) {
-    (byId[run.pipelineRunId] ??= []).push(run);
-  }
-  const groups = Object.values(byId).map((groupRuns): PipelineGroup => {
-    const sorted = [...groupRuns].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
-    const status: AgentRunStatus = sorted.some((r) => r.status === "running")
-      ? "running"
-      : sorted.some((r) => r.status === "failed")
-        ? "failed"
-        : sorted.some((r) => r.status === "waiting_for_user")
-          ? "waiting_for_user"
-          : "completed";
-    return {
-      pipelineRunId: sorted[0].pipelineRunId,
-      runs: sorted,
-      startedAt: sorted[0].startedAt,
-      status,
-    };
-  });
-  return groups.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 }
 
 export function AgentActivity() {
@@ -77,12 +44,12 @@ export function AgentActivity() {
     <div className="space-y-6">
       <PageHeader
         title="Agent Activity"
-        description="What Collegentic's agents are doing right now, and what they've done — running, completed, waiting for you, or failed."
+        description="What Collegentic's agents are doing right now, and what they've done."
       />
 
       {runs !== null && groups.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          No agent activity yet — add a college to see the pipeline run here.
+          Add a college to see activity here.
         </p>
       )}
 

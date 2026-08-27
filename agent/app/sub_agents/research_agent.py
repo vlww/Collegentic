@@ -77,6 +77,22 @@ FOR EACH COLLEGE, research and report:
 - Interview requirements/availability
 - Financial aid deadlines (e.g. CSS Profile, FAFSA priority date)
 - Any major/program-specific application requirements you find
+- School brand colors: the official primary (and secondary, if stated) color
+  as a hex code, from the school's brand/identity guidelines page if you can
+  find one (search e.g. "site:brand.<college>.edu color" or "<college>
+  official brand color hex").
+- Official logo image: a downstream deterministic step (not you) already
+  looks up each school's logo — its athletics logo from logobrands.com for
+  an SEC/ACC/Big Ten/Big 12 school, otherwise the first infobox image on
+  its Wikipedia page — so don't spend effort on this unless that step could
+  plausibly fail. Only if you happen to notice one, as an absolute last
+  resort: search "site:commons.wikimedia.org <college> seal" and report
+  ONLY the exact Wikimedia Commons file name of the school's official seal
+  that you actually found (the part after "File:" in the page title). A
+  plain white background is fine, it does NOT need to be transparent. Do
+  NOT try to construct a hotlinkable image URL yourself — a downstream step
+  resolves the real thumbnail URL from the filename deterministically. Just
+  the filename, exactly as found; never guess one.
 
 CRITICAL — never invent information:
 - If a requirement is not clearly stated, is contradicted across sources,

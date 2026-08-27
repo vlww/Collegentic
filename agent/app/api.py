@@ -36,6 +36,10 @@ Revisit when a real chat surface (Student Advisor Agent) is built.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from google.genai import types
 from pydantic import BaseModel, ConfigDict
@@ -43,10 +47,14 @@ from pydantic.alias_generators import to_camel
 
 from app.demo_data import seed_demo_data
 from app.schemas import (
+    AgentRunStatus,
     ConflictStatus,
     MaterialType,
     Readiness,
     ReadinessBreakdown,
+    Recommendation,
+    RecommendationStatus,
+    RecommenderType,
     RequirementStatus,
     StudentMaterial,
     TaskStatus,
@@ -55,6 +63,7 @@ from app.tools import firestore_tools as ft
 from app.tools.scoring import (
     compute_priority_score,
     compute_readiness_score,
+    recommendations_for_college,
     resolve_effective_deadline,
 )
 
@@ -64,6 +73,7 @@ from app.tools.scoring import (
 # ADK-generated route (/run_sse, /apps/..., etc.), none of which carry that
 # prefix either. The frontend always calls "/api/...".
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def require_user_id(x_user_id: str | None = Header(default=None)) -> str:
@@ -86,6 +96,17 @@ def get_college(college_id: str, user_id: str = Depends(require_user_id)) -> dic
     return college.model_dump(mode="json", by_alias=True)
 
 
+@router.delete("/colleges/{college_id}")
+def delete_college(college_id: str, user_id: str = Depends(require_user_id)) -> dict:
+    """Drops a college the student isn't applying to after all — see
+    ft.delete_college for the full cleanup (requirements, essay prompts,
+    research sources, tasks, essay matches, conflicts, recommendations)."""
+    if ft.get_college(user_id, college_id) is None:
+        raise HTTPException(status_code=404, detail="College not found")
+    ft.delete_college(user_id, college_id)
+    return {"id": college_id}
+
+
 @router.get("/requirements")
 def list_requirements(
     college_ids: str | None = None, user_id: str = Depends(require_user_id)
@@ -105,6 +126,7 @@ class RequirementProgressUpdate(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
     status: RequirementStatus
     completion_percentage: float | None = None
+    student_notes: str | None = None
 
 
 # A requirement's completion_percentage when the caller sets only `status` —
@@ -142,7 +164,12 @@ def update_requirement_progress(
         else _STATUS_DEFAULT_COMPLETION[body.status]
     )
     ft.update_requirement_progress(
-        user_id, college_id, requirement_id, body.status.value, completion_percentage
+        user_id,
+        college_id,
+        requirement_id,
+        body.status.value,
+        completion_percentage,
+        body.student_notes,
     )
     return {"status": "ok"}
 
@@ -212,13 +239,19 @@ def recompute_readiness(user_id: str = Depends(require_user_id)) -> list[dict]:
     that moved on while its old sentence still cited the previous number.
     """
     colleges = ft.get_tracked_colleges(user_id)
+    all_recommendations = ft.get_recommendations(user_id)
+    test_scores_submitted = ft.get_test_scores_submitted(user_id)
     for college in colleges:
         requirements = ft.get_requirements(user_id, [college.id])
-        result = compute_readiness_score(requirements, college.deadlines)
+        college_recommendations = recommendations_for_college(
+            all_recommendations, college.id
+        )
+        result = compute_readiness_score(
+            requirements, college.deadlines, college_recommendations, test_scores_submitted
+        )
         readiness = Readiness(
             score=result.score,
             breakdown=ReadinessBreakdown(
-                requirements=result.requirements,
                 essays=result.essays,
                 recommendations=result.recommendations,
                 testing=result.testing,
@@ -228,6 +261,119 @@ def recompute_readiness(user_id: str = Depends(require_user_id)) -> list[dict]:
             computed_at=ft.now(),
         )
         ft.save_readiness(user_id, college.id, readiness)
+    return [
+        college.model_dump(mode="json", by_alias=True)
+        for college in ft.get_tracked_colleges(user_id)
+    ]
+
+
+# --- My Progress: account-wide test scores + recommendations ----------------
+# Both are self-reported once per student, not per college — see
+# app/tools/scoring.py's compute_readiness_score for how each feeds
+# readiness. Neither route recomputes readiness itself; the frontend calls
+# POST /readiness/recompute right after, same pattern as
+# update_requirement_progress above.
+
+
+@router.get("/test-scores")
+def get_test_scores(user_id: str = Depends(require_user_id)) -> dict:
+    return {"submitted": ft.get_test_scores_submitted(user_id)}
+
+
+class TestScoresUpdate(BaseModel):
+    submitted: bool
+
+
+@router.put("/test-scores")
+def update_test_scores(
+    body: TestScoresUpdate, user_id: str = Depends(require_user_id)
+) -> dict:
+    ft.set_test_scores_submitted(user_id, body.submitted)
+    return {"submitted": body.submitted}
+
+
+@router.get("/recommendations")
+def list_recommendations(user_id: str = Depends(require_user_id)) -> list[dict]:
+    return [
+        rec.model_dump(mode="json", by_alias=True)
+        for rec in ft.get_recommendations(user_id)
+    ]
+
+
+class RecommendationInput(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    recommender_name: str | None = None
+    recommender_type: RecommenderType
+    status: RecommendationStatus = RecommendationStatus.NOT_REQUESTED
+    college_ids: list[str] = []
+
+
+@router.post("/recommendations")
+def create_recommendation(
+    body: RecommendationInput, user_id: str = Depends(require_user_id)
+) -> dict:
+    rec_id = ft.save_recommendation(user_id, Recommendation(**body.model_dump()))
+    return {"id": rec_id}
+
+
+@router.patch("/recommendations/{recommendation_id}")
+def update_recommendation(
+    recommendation_id: str,
+    body: RecommendationInput,
+    user_id: str = Depends(require_user_id),
+) -> dict:
+    ft.save_recommendation(
+        user_id, Recommendation(id=recommendation_id, **body.model_dump())
+    )
+    return {"id": recommendation_id}
+
+
+@router.delete("/recommendations/{recommendation_id}")
+def delete_recommendation(
+    recommendation_id: str, user_id: str = Depends(require_user_id)
+) -> dict:
+    ft.delete_recommendation(user_id, recommendation_id)
+    return {"id": recommendation_id}
+
+
+@router.post("/colleges/refresh-logos")
+def refresh_college_logos(user_id: str = Depends(require_user_id)) -> list[dict]:
+    """Re-runs just the deterministic logo lookup (app/sub_agents/
+    requirements_agent.py's _fetch_college_logo — no LLM call, no
+    google_search, no college_intake_pipeline) for every already-tracked
+    college, overwriting logoUrl with whatever it finds now.
+
+    Exists because the logo-picking LOGIC has changed several times without
+    any of a college's underlying research changing — college_intake_agent
+    only re-researches a college with zero Requirement docs, so a college
+    researched under an earlier version of the picker stays stuck with
+    whatever it returned back then, even after later fixes. This is the
+    "just re-run today's picker against my existing colleges" escape
+    hatch — safe and free to call any time, same
+    deterministic-recompute-no-LLM shape as /priorities/recompute and
+    /readiness/recompute above.
+    """
+    # Local import: requirements_agent.py constructs LlmAgent/ADK objects
+    # at module load time, which needs config loaded first (dotenv) —
+    # fine once the app has started (this only runs when the route is
+    # actually called), but importing it at api.py's own module top level
+    # would run before fast_api_app.py's load_dotenv() call.
+    from app.sub_agents.requirements_agent import _fetch_college_logo
+
+    colleges = ft.get_tracked_colleges(user_id)
+    for i, college in enumerate(colleges):
+        if i > 0:
+            time.sleep(0.5)
+        try:
+            logo_url = _fetch_college_logo(college.name)
+        except Exception:
+            logger.warning(
+                "Logo refresh failed for %r, leaving it unchanged", college.name,
+                exc_info=True,
+            )
+            continue
+        if logo_url:
+            ft.update_college_branding(user_id, college.id, {"logoUrl": logo_url})
     return [
         college.model_dump(mode="json", by_alias=True)
         for college in ft.get_tracked_colleges(user_id)
@@ -372,6 +518,20 @@ class OrchestratorMessageResponse(BaseModel):
     reply: str
 
 
+async def _run_orchestrator(runner, user_id: str, session_id: str, message: str) -> str:
+    reply_parts: list[str] = []
+    async for event in runner.run_async(
+        new_message=types.Content(role="user", parts=[types.Part.from_text(text=message)]),
+        user_id=user_id,
+        session_id=session_id,
+    ):
+        if event.content and event.content.parts:
+            for part in event.content.parts:
+                if part.text:
+                    reply_parts.append(part.text)
+    return "".join(reply_parts)
+
+
 @router.post("/orchestrator/messages")
 async def send_orchestrator_message(
     body: OrchestratorMessageRequest,
@@ -382,16 +542,40 @@ async def send_orchestrator_message(
     session = await runner.session_service.create_session(
         app_name=request.app.state.agent_app_name, user_id=user_id
     )
-    reply_parts: list[str] = []
-    async for event in runner.run_async(
-        new_message=types.Content(
-            role="user", parts=[types.Part.from_text(text=body.message)]
-        ),
-        user_id=user_id,
-        session_id=session.id,
-    ):
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.text:
-                    reply_parts.append(part.text)
-    return OrchestratorMessageResponse(reply="".join(reply_parts))
+    # asyncio.shield, not a plain await: college_intake_pipeline runs real
+    # web research across several agents and can take a minute or two, and
+    # this endpoint's task is what a client disconnect (tab closed, page
+    # refreshed) would cancel. Local uvicorn was confirmed NOT to do this by
+    # default, but that's not guaranteed under every deployment target this
+    # app runs behind (Cloud Run's request handling and any reverse proxy in
+    # front of it are different code paths) — shield() makes the pipeline
+    # immune to that class of cancellation regardless, at zero cost: a
+    # cancelled caller still raises CancelledError here (nothing to send a
+    # departed browser anyway), but _run_orchestrator keeps running to
+    # completion in the background either way, matching the "autonomous-OK,
+    # no approval gate" research/extraction work .agents-cli-spec.md §
+    # Constraints describes.
+    try:
+        reply = await asyncio.shield(
+            _run_orchestrator(runner, user_id, session.id, body.message)
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # An unhandled exception partway through college_intake_pipeline
+        # (LLM output validation, a transient google_search error, ...)
+        # otherwise leaves that turn's AgentRun docs stuck in "running"
+        # forever — Agent Activity would show a pipeline that looks like
+        # it's still going when it's actually dead. Close them out as
+        # failed, with the real error, so a partial run is visible and
+        # diagnosable instead of silently vanishing.
+        logger.exception("Orchestrator pipeline failed for user %s", user_id)
+        for run in ft.get_agent_runs(user_id, pipeline_run_id=session.id):
+            if run.status == AgentRunStatus.RUNNING:
+                ft.fail_agent_run(user_id, run.id, error_message=str(exc))  # type: ignore[arg-type]
+        raise HTTPException(
+            status_code=502,
+            detail="Research hit an error partway through — some colleges may be "
+            "incomplete. Check Agent Activity for details, then try again.",
+        ) from exc
+    return OrchestratorMessageResponse(reply=reply)

@@ -117,18 +117,17 @@ class TaskCreatedBy(StrEnum):
 
 
 class RecommenderType(StrEnum):
-    STEM = "STEM"
-    HUMANITIES = "Humanities"
+    TEACHER_STEM = "TeacherSTEM"
+    TEACHER_HUMANITIES = "TeacherHumanities"
     COUNSELOR = "Counselor"
+    EMPLOYER = "Employer"
     OTHER = "Other"
 
 
 class RecommendationStatus(StrEnum):
-    NOT_IDENTIFIED = "NotIdentified"
-    PLANNED = "Planned"
+    NOT_REQUESTED = "NotRequested"
     REQUESTED = "Requested"
-    RECEIVED = "Received"
-    VERIFIED = "Verified"
+    SUBMITTED = "Submitted"
 
 
 class ConflictType(StrEnum):
@@ -192,7 +191,6 @@ class CollegeDeadlines(BaseModel):
 
 class ReadinessBreakdown(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
-    requirements: float = 0
     essays: float = 0
     recommendations: float = 0
     testing: float = 0
@@ -236,6 +234,20 @@ class Requirement(FirestoreModel):
     confidence: ConfidenceLevel = ConfidenceLevel.LOW
     needs_verification: bool = False
     source_ids: list[str] = Field(default_factory=list)
+    # Free-text the student attaches when self-reporting progress (e.g. an
+    # actual SAT/ACT score, or "asked Ms. Chen 3/1") — never read by
+    # compute_readiness_score, purely a note to themselves alongside the
+    # status/completion that DOES feed it. Never set by research.
+    student_notes: str | None = None
+    # Only meaningful when type == "recommendation": how many individual
+    # letters this requirement covers (e.g. "2 teacher recommendations" ->
+    # 2), extracted by the Requirements Agent from the research findings —
+    # see requirements_agent.py's ExtractedRequirement. compute_readiness_
+    # score sums this across a college's recommendation requirements to
+    # know how many letters are actually needed, not just whether at least
+    # one has been requested. Null for every other requirement type, or
+    # when the count genuinely wasn't stated.
+    recommendation_count: int | None = None
 
 
 # --- users/{userId}/researchSources/{sourceId} -------------------------------
@@ -319,11 +331,18 @@ class Task(FirestoreModel):
 
 # --- users/{userId}/recommendations/{recId} ----------------------------------
 
+# Sentinel stored inside Recommendation.college_ids to mean "every college
+# I'm tracking" (the My Progress page's "All" option), resolved dynamically
+# against the CURRENT tracked-college list wherever it's read — rather than
+# a frozen snapshot that wouldn't extend to a college added later. Never a
+# real Firestore-generated college id, so it can't collide.
+RECOMMENDATION_ALL_COLLEGES = "ALL"
+
 
 class Recommendation(FirestoreModel):
     recommender_name: str | None = None
     recommender_type: RecommenderType
-    status: RecommendationStatus = RecommendationStatus.NOT_IDENTIFIED
+    status: RecommendationStatus = RecommendationStatus.NOT_REQUESTED
     college_ids: list[str] = Field(default_factory=list)
     requested_at: datetime | None = None
 

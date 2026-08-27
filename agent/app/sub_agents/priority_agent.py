@@ -113,7 +113,8 @@ class TaskExplanationList(BaseModel):
 _PRIORITY_EXPLANATION_INSTRUCTION = """You write one-sentence priority
 explanations for a college-application task list. For EACH task below,
 write a natural, plain-language sentence explaining why it has the score it
-has — echo its given facts, don't add anything they didn't say.
+has, echoing its given facts, don't add anything they didn't say. No
+markdown formatting and no em dashes, write it like an ordinary sentence.
 
 TASKS (task_id -> title, score 0-100, facts):
 {task_priority_context}

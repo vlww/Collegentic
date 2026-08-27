@@ -5,6 +5,9 @@ import type {
   Conflict,
   EssayMatch,
   EssayPrompt,
+  Recommendation,
+  RecommendationStatus,
+  RecommenderType,
   Requirement,
   ResearchSource,
   StudentMaterial,
@@ -106,6 +109,13 @@ export function getCollege(collegeId: string): Promise<College> {
   return apiFetch(`/api/colleges/${collegeId}`);
 }
 
+/** Drops a college and everything derived from researching it (requirements,
+ * essay prompts, research sources, tasks, essay matches, conflicts, and its
+ * id out of any recommendation) — see app/api.py's delete_college. */
+export function deleteCollege(collegeId: string): Promise<{ id: string }> {
+  return apiFetch(`/api/colleges/${collegeId}`, { method: "DELETE" });
+}
+
 export function getRequirements(collegeIds?: string[]): Promise<Requirement[]> {
   const query = collegeIds?.length ? `?college_ids=${collegeIds.join(",")}` : "";
   return apiFetch(`/api/requirements${query}`);
@@ -129,6 +139,63 @@ export function recomputeReadiness(): Promise<College[]> {
   return apiFetch("/api/readiness/recompute", { method: "POST" });
 }
 
+/** My Progress' Test Scores toggle — a single account-wide answer, not per
+ * college (see app/tools/scoring.py's compute_readiness_score). */
+export function getTestScores(): Promise<{ submitted: boolean }> {
+  return apiFetch("/api/test-scores");
+}
+
+export function updateTestScores(submitted: boolean): Promise<{ submitted: boolean }> {
+  return apiFetch("/api/test-scores", {
+    method: "PUT",
+    body: JSON.stringify({ submitted }),
+  });
+}
+
+/** My Progress' recommenders table — one recommender can cover several
+ * colleges (or every one, via RECOMMENDATION_ALL_COLLEGES), so this is
+ * account-wide, not scoped to a single college like Requirements. */
+export function getRecommendations(): Promise<Recommendation[]> {
+  return apiFetch("/api/recommendations");
+}
+
+interface RecommendationInput {
+  recommenderName: string | null;
+  recommenderType: RecommenderType;
+  status: RecommendationStatus;
+  collegeIds: string[];
+}
+
+export function createRecommendation(input: RecommendationInput): Promise<{ id: string }> {
+  return apiFetch("/api/recommendations", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateRecommendation(
+  id: string,
+  input: RecommendationInput
+): Promise<{ id: string }> {
+  return apiFetch(`/api/recommendations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteRecommendation(id: string): Promise<{ id: string }> {
+  return apiFetch(`/api/recommendations/${id}`, { method: "DELETE" });
+}
+
+/** Re-runs just the deterministic logo lookup for every already-tracked
+ * college (no LLM call, no re-research) — see app/api.py's
+ * refresh_college_logos. Lets a college researched under an earlier
+ * version of the logo picker pick up a later fix without a full
+ * re-research pass. */
+export function refreshCollegeLogos(): Promise<College[]> {
+  return apiFetch("/api/colleges/refresh-logos", { method: "POST" });
+}
+
 /** The one place a student directly asserts their own progress on a
  * requirement — see app/api.py's update_requirement_progress. Omitting
  * completionPercentage lets the backend derive it from `status`. */
@@ -136,7 +203,8 @@ export function updateRequirementProgress(
   collegeId: string,
   requirementId: string,
   status: Requirement["status"],
-  completionPercentage?: number
+  completionPercentage?: number,
+  studentNotes?: string | null
 ): Promise<void> {
   return apiFetch(`/api/colleges/${collegeId}/requirements/${requirementId}`, {
     method: "PATCH",
@@ -145,6 +213,7 @@ export function updateRequirementProgress(
       ...(completionPercentage !== undefined
         ? { completionPercentage }
         : {}),
+      ...(studentNotes !== undefined ? { studentNotes } : {}),
     }),
   });
 }

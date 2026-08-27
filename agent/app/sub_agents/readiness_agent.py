@@ -46,7 +46,7 @@ from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
 from app.schemas import Readiness, ReadinessBreakdown
 from app.tools import firestore_tools as ft
-from app.tools.scoring import compute_readiness_score
+from app.tools.scoring import compute_readiness_score, recommendations_for_college
 
 
 class CollegeReadinessContextAgent(BaseAgent):
@@ -62,16 +62,22 @@ class CollegeReadinessContextAgent(BaseAgent):
     ) -> AsyncGenerator[Event, None]:
         user_id = ctx.session.user_id
         colleges = ft.get_tracked_colleges(user_id)
+        all_recommendations = ft.get_recommendations(user_id)
+        test_scores_submitted = ft.get_test_scores_submitted(user_id)
 
         context_payload = {}
         for college in colleges:
             requirements = ft.get_requirements(user_id, [college.id])
-            result = compute_readiness_score(requirements, college.deadlines)
+            college_recommendations = recommendations_for_college(
+                all_recommendations, college.id
+            )
+            result = compute_readiness_score(
+                requirements, college.deadlines, college_recommendations, test_scores_submitted
+            )
             context_payload[college.id] = {
                 "name": college.name,
                 "score": result.score,
                 "breakdown": {
-                    "requirements": result.requirements,
                     "essays": result.essays,
                     "recommendations": result.recommendations,
                     "testing": result.testing,
@@ -106,8 +112,9 @@ class ReadinessExplanationList(BaseModel):
 _READINESS_EXPLANATION_INSTRUCTION = """You write one-sentence application
 readiness explanations for a college applicant. For EACH college below,
 write a natural, plain-language sentence explaining why it has the
-readiness score it has — echo its given facts, don't add anything they
-didn't say.
+readiness score it has, echoing its given facts, don't add anything they
+didn't say. No markdown formatting and no em dashes, write it like an
+ordinary sentence.
 
 COLLEGES (college_id -> name, score 0-100, breakdown, facts):
 {college_readiness_context}

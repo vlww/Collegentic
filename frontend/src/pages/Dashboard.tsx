@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { CollegeTable } from "@/components/collegentic/CollegeTable";
 import { TodaysPriorities } from "@/components/collegentic/TodaysPriorities";
 import { ConflictAlerts } from "@/components/collegentic/ConflictAlerts";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { getColleges, getRequirements } from "@/lib/api";
+import { deleteCollege, getColleges, getRequirements } from "@/lib/api";
 import type { College, Requirement } from "@/lib/types";
 import { Link } from "react-router-dom";
 
@@ -14,16 +14,23 @@ export function Dashboard() {
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [error, setError] = useState(false);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     getColleges()
       .then(async (result) => {
         setColleges(result);
-        if (result.length > 0) {
-          setRequirements(await getRequirements(result.map((c) => c.id)));
-        }
+        setRequirements(result.length > 0 ? await getRequirements(result.map((c) => c.id)) : []);
       })
       .catch(() => setError(true));
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function handleDelete(collegeId: string) {
+    await deleteCollege(collegeId);
+    load();
+  }
 
   const requirementsByCollege: Record<string, Requirement[]> = {};
   for (const requirement of requirements) {
@@ -39,7 +46,7 @@ export function Dashboard() {
     <div>
       <PageHeader
         title="Dashboard"
-        description="Today's Priorities and the full college application matrix — what's going on with all of your applications, at a glance."
+        description="All of your applications, at a glance."
       />
 
       <div className="mb-6 space-y-6">
@@ -75,7 +82,11 @@ export function Dashboard() {
       )}
 
       {!error && colleges !== null && colleges.length > 0 && (
-        <CollegeTable colleges={colleges} requirementsByCollege={requirementsByCollege} />
+        <CollegeTable
+          colleges={colleges}
+          requirementsByCollege={requirementsByCollege}
+          onDelete={handleDelete}
+        />
       )}
     </div>
   );

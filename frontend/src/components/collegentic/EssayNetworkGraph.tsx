@@ -86,7 +86,7 @@ export function EssayNetworkGraph({
   if (prompts.length === 0 && materials.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        Nothing to map yet — add colleges (for essay prompts) and materials to see how they
+        Add colleges (for essay prompts) and materials to see how they
         connect.
       </p>
     );

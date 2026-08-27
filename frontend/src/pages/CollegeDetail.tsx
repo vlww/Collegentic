@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/collegentic/StatusBadge";
+import { CollegeAvatar } from "@/components/collegentic/CollegeAvatar";
 import { RequirementsList } from "@/components/collegentic/RequirementsList";
 import { ReadinessCard } from "@/components/collegentic/ReadinessCard";
 import { Card, CardContent } from "@/components/ui/card";
@@ -56,6 +57,7 @@ export function CollegeDetail() {
       </Link>
 
       <div className="flex items-center gap-3">
+        <CollegeAvatar college={college} size="lg" />
         <PageHeader title={college.name} />
         <StatusBadge status={college.status} />
       </div>
@@ -83,7 +85,7 @@ export function CollegeDetail() {
 
       <div>
         <h2 className="text-sm font-semibold mb-3">Application Readiness</h2>
-        <ReadinessCard collegeName={college.name} readiness={readiness} />
+        <ReadinessCard college={college} readiness={readiness} />
       </div>
 
       <div>

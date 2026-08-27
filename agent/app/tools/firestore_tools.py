@@ -181,6 +181,27 @@ def save_user_profile(user_id: str, profile: UserProfile) -> None:
     _user_doc(user_id).set(payload, merge=True)
 
 
+_TEST_SCORES_SUBMITTED_FIELD = "testScoresSubmitted"
+
+
+def get_test_scores_submitted(user_id: str) -> bool:
+    """Whether the student has submitted standardized test scores — a
+    single account-wide answer (My Progress), not per college: unlike
+    Requirements, a test score isn't something a college's own research
+    produces. Stored directly on the user doc rather than folded into
+    UserProfile, which a LIVE (non-demo) account never otherwise has one
+    of (see get_user_profile) — this needs to read/write independently of
+    that doc's own required fields."""
+    doc = _user_doc(user_id).get()
+    if not doc.exists:
+        return False
+    return bool((doc.to_dict() or {}).get(_TEST_SCORES_SUBMITTED_FIELD, False))
+
+
+def set_test_scores_submitted(user_id: str, submitted: bool) -> None:
+    _user_doc(user_id).set({_TEST_SCORES_SUBMITTED_FIELD: submitted}, merge=True)
+
+
 # --- Colleges ---------------------------------------------------------------
 
 
@@ -219,6 +240,22 @@ def update_college_deadlines(
     _colleges(user_id).document(college_id).update(payload)
 
 
+def update_college_branding(
+    user_id: str, college_id: str, fields: dict[str, str]
+) -> None:
+    """Partial update of College.schoolColors/logoUrl — `fields` maps
+    "primary"/"secondary"/"logoUrl" to a value. Dot-path updates like
+    update_college_deadlines, so setting only a primary color (say) doesn't
+    clobber a secondary color set in an earlier research pass."""
+    if not fields:
+        return
+    payload = {
+        ("logoUrl" if key == "logoUrl" else f"schoolColors.{key}"): value
+        for key, value in fields.items()
+    }
+    _colleges(user_id).document(college_id).update(payload)
+
+
 # --- Requirements -------------------------------------------------------
 
 
@@ -242,14 +279,23 @@ def update_requirement_progress(
     requirement_id: str,
     status: str,
     completion_percentage: float,
+    student_notes: str | None = None,
 ) -> None:
     """Partial update of a Requirement's own progress fields — the one place
     a STUDENT directly asserts their own completion (not an agent inference,
     so no human-in-the-loop approval gate applies here; see
-    .agents-cli-spec.md § Human-in-the-Loop). Feeds
-    app/tools/scoring.py's compute_readiness_score."""
+    .agents-cli-spec.md § Human-in-the-Loop). status/completionPercentage
+    feed app/tools/scoring.py's compute_readiness_score; studentNotes is a
+    free-text aside (e.g. an actual test score) the formula never reads, so
+    it's fine to always overwrite alongside them — the frontend always
+    submits the row's current notes value together with any status change,
+    never just one or the other."""
     _requirements(user_id, college_id).document(requirement_id).update(
-        {"status": status, "completionPercentage": completion_percentage}
+        {
+            "status": status,
+            "completionPercentage": completion_percentage,
+            "studentNotes": student_notes,
+        }
     )
 
 
@@ -377,6 +423,10 @@ def save_recommendation(user_id: str, recommendation: Recommendation) -> str:
     return _upsert(_recommendations(user_id), recommendation)
 
 
+def delete_recommendation(user_id: str, recommendation_id: str) -> None:
+    _recommendations(user_id).document(recommendation_id).delete()
+
+
 # --- Conflicts ------------------------------------------------------------
 
 
@@ -396,6 +446,59 @@ def update_conflict_status(
     (app/sub_agents/conflict_agent.py) — never reopens a conflict, only ever
     moves it toward acknowledged/resolved."""
     _conflicts(user_id).document(conflict_id).update({"status": status.value})
+
+
+# --- Delete -----------------------------------------------------------------
+
+
+def delete_college(user_id: str, college_id: str) -> None:
+    """Removes a College doc and everything derived from researching it, so
+    dropping it from the list doesn't leave orphaned rows visible elsewhere
+    in the app: its requirements/essayPrompts subcollections, researchSources,
+    tasks, and essayMatches all get deleted outright (nothing else references
+    them); a Conflict naming this college gets deleted too, since a conflict
+    about a college that no longer exists isn't meaningful; a Recommendation
+    naming this college among others just has the id stripped out of its
+    list (deleted outright only if this was its last college), since a
+    recommender request can span colleges that shouldn't disappear with one
+    of them.
+
+    One batch commit: a partial delete would be worse than the original
+    state (student sees the college gone from the list but its tasks/
+    conflicts still lingering elsewhere with a now-dangling college_id)."""
+    batch = _client().batch()
+
+    for doc in _requirements(user_id, college_id).stream():
+        batch.delete(doc.reference)
+    for doc in _essay_prompts(user_id, college_id).stream():
+        batch.delete(doc.reference)
+    for doc in _research_sources(user_id).where(
+        filter=FieldFilter("collegeId", "==", college_id)
+    ).stream():
+        batch.delete(doc.reference)
+    for doc in _tasks(user_id).where(
+        filter=FieldFilter("collegeId", "==", college_id)
+    ).stream():
+        batch.delete(doc.reference)
+    for doc in _essay_matches(user_id).where(
+        filter=FieldFilter("collegeId", "==", college_id)
+    ).stream():
+        batch.delete(doc.reference)
+    for doc in _conflicts(user_id).where(
+        filter=FieldFilter("collegeIds", "array_contains", college_id)
+    ).stream():
+        batch.delete(doc.reference)
+    for doc in _recommendations(user_id).where(
+        filter=FieldFilter("collegeIds", "array_contains", college_id)
+    ).stream():
+        remaining = [cid for cid in doc.to_dict().get("collegeIds", []) if cid != college_id]
+        if remaining:
+            batch.update(doc.reference, {"collegeIds": remaining})
+        else:
+            batch.delete(doc.reference)
+
+    batch.delete(_colleges(user_id).document(college_id))
+    batch.commit()
 
 
 # --- Agent activity ---------------------------------------------------------

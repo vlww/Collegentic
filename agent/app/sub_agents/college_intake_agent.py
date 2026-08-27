@@ -18,9 +18,12 @@ Ensures a Firestore College doc exists for every name in
 `state["requested_colleges"]`, reusing an existing one by case-insensitive
 name/alias match rather than creating a duplicate. Sets:
 - `college_name_to_id`: every requested name -> its Firestore college id
-- `new_college_names`: only the names that didn't already exist — these are
-  the ones that actually need research (see .agents-cli-spec.md § Cost
-  Control: "only perform new research when a school is newly added").
+- `new_college_names`: names that didn't already exist, OR did but have zero
+  Requirement docs (a stub from a prior run interrupted by an error before
+  research finished) — these are the ones that actually need research (see
+  .agents-cli-spec.md § Cost Control: "only perform new research when a
+  school is newly added", extended to also cover "or was never actually
+  researched").
 
 Built now (Milestone 4) because the Requirements Agent needs a real
 Firestore college_id to write Requirement docs into. This is exactly the
@@ -63,6 +66,31 @@ class CollegeIntakeAgent(BaseAgent):
 
         existing = ft.get_tracked_colleges(user_id)
         by_name = {c.name.strip().lower(): c for c in existing}
+        # A college with zero Requirement docs is a stub: either brand new,
+        # or an "already tracked" college whose research was interrupted
+        # partway through by an earlier error (see api.py's pipeline error
+        # handler) — Requirements Agent had already saved its requirements
+        # before the callback that does college branding/logo lookup could
+        # fail, or it crashed even before that. Either way, a name matching
+        # one of these should still count as needing research, not get
+        # silently skipped as "already tracked" — that's what makes "resume
+        # after an error" work by just re-submitting the same names.
+        try:
+            researched_ids = {
+                r.college_id for r in ft.get_requirements(user_id, [c.id for c in existing])
+            }
+        except Exception:
+            # Fail safe, not fail closed: if we can't tell which tracked
+            # colleges are already researched, treat all of them as still
+            # needing it — worst case that's some wasted re-research, not a
+            # silently-skipped college and not a failed pipeline run over a
+            # transient Firestore read.
+            logger.warning(
+                "Failed to check research status for tracked colleges; treating "
+                "all matched colleges as needing research to be safe.",
+                exc_info=True,
+            )
+            researched_ids = set()
 
         name_to_id: dict[str, str] = {}
         new_names: list[str] = []
@@ -76,6 +104,8 @@ class CollegeIntakeAgent(BaseAgent):
                 )
             if match:
                 name_to_id[name] = match.id  # type: ignore[assignment]
+                if match.id not in researched_ids:
+                    new_names.append(name)
             else:
                 new_id = ft.save_college(user_id, College(name=name))
                 name_to_id[name] = new_id

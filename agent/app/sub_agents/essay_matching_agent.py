@@ -230,6 +230,8 @@ STRICT RULES:
 - Every requirement_id you output MUST come from ESSAY REQUIREMENTS below.
 - Every material_id you output MUST come from MATERIALS below.
 - Never invent a word_limit, theme, or score not grounded in the given text.
+- Write `reasoning` as a short, plain sentence: no markdown formatting, no
+  em dashes.
 
 DATA (essay requirements needing a clean prompt, and the student's
 existing materials to compare them against):

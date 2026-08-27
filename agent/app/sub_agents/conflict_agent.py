@@ -65,7 +65,7 @@ from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
 from app.schemas import Conflict, ConflictStatus, RecommendationStatus
 from app.tools import firestore_tools as ft
-from app.tools.scoring import earliest_college_deadline
+from app.tools.scoring import earliest_college_deadline, recommendations_for_college
 
 _DEADLINE_CLUSTER_WINDOW_DAYS = (
     5  # consecutive deadlines this close together form one cluster
@@ -103,9 +103,8 @@ class ConflictContextAgent(BaseAgent):
             known_requirement_ids.extend(req.id for req in college_reqs)
             matched_recommenders = sum(
                 1
-                for rec in recommendations
-                if college.id in rec.college_ids
-                and rec.status != RecommendationStatus.NOT_IDENTIFIED
+                for rec in recommendations_for_college(recommendations, college.id)
+                if rec.status != RecommendationStatus.NOT_REQUESTED
             )
             recommendation_reqs = [
                 r for r in college_reqs if r.type == "recommendation"
@@ -240,6 +239,8 @@ STRICT RULES:
 - If you find no genuine conflict, return an empty conflicts list — do not
   manufacture one just to have something to report.
 - Ground every description in the specific facts given.
+- Write `description` and `recommendation` as short, plain sentences: no
+  markdown formatting, no em dashes.
 
 DATA (colleges with their recommendation/testing/financial-aid requirements
 and recommendation_gap, plus any deadline_clusters already computed):

@@ -44,9 +44,8 @@ export function Onboarding() {
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-semibold">Let's get your applications organized.</h1>
           <p className="text-sm text-navy-foreground/70">
-            Tell Collegentic which colleges you're applying to — real requirements get
-            researched from official sources, with tasks and priorities planned
-            automatically.
+            Tell Collegentic which colleges you're applying to, and we'll research
+            requirements and plan your tasks automatically.
           </p>
         </div>
 
@@ -63,9 +62,8 @@ export function Onboarding() {
         <Card className="bg-card text-card-foreground">
           <CardContent className="space-y-3 text-center">
             <p className="text-sm text-muted-foreground">
-              Just want to see Collegentic in action? Try a pre-built profile — 6
-              colleges, partial essays, a real recommendation conflict, and everything
-              else populated instantly, no research wait.
+              Just want to see it in action? Try a pre-built profile, populated
+              instantly, no research wait.
             </p>
             <Button
               variant="outline"
