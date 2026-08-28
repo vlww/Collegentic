@@ -60,11 +60,12 @@ export interface College {
 
 /** Mirrors agent/app/schemas.py's PipelineProgress — polled while a
  * research submission is in flight to drive the Colleges page's progress
- * bar. `null` when no run has ever started for this account. */
+ * bar. `null` when no run has ever started for this account. No
+ * `startedAt`/ETA: colleges are researched concurrently now, so there's no
+ * single consistent per-college pace to extrapolate a time estimate from. */
 export interface PipelineProgress {
   totalColleges: number;
   completedColleges: number;
-  startedAt: string;
 }
 
 export type RequirementStatus =

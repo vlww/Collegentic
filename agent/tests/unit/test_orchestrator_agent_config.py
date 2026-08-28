@@ -71,19 +71,19 @@ def test_intake_pipeline_stage_order() -> None:
     ]
 
 
-def test_per_college_stage_researches_then_extracts() -> None:
-    """per_college_pipeline is wrapped inside per_college_research_and_
-    extraction (see its docstring) so each newly requested college is
-    fully researched and persisted before the next college's research
-    starts, instead of every college being researched in one batched
-    call — this is what makes the Colleges table fill in progressively
-    rather than all at once."""
+def test_per_college_stage_has_no_static_sub_agents() -> None:
+    """per_college_research_and_extraction deliberately does NOT declare
+    per_college_pipeline via `sub_agents=[...]` — it runs it dynamically,
+    once per college, each against its own throwaway child session (see
+    its docstring), so per_college_pipeline must stay unparented and free
+    to be reused as a fresh Runner's root agent for each of those sessions."""
     stage = next(
         agent
         for agent in college_intake_pipeline.sub_agents
         if agent.name == "per_college_research_and_extraction"
     )
-    assert [agent.name for agent in stage.sub_agents] == ["per_college_pipeline"]
+    assert stage.sub_agents == []
+    assert per_college_pipeline.parent_agent is None
 
 
 def test_per_college_pipeline_runs_quick_and_detailed_research_concurrently() -> None:

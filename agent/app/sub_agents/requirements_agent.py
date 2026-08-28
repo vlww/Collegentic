@@ -698,9 +698,12 @@ research pass below — a college's brand color(s) and, if found, a Wikimedia
 Commons logo filename. Nothing else.
 
 BRANDING RESEARCH FINDINGS:
-{{branding_research_findings}}
+{{branding_research_findings?}}
 
 Today's date is {datetime.date.today().isoformat()}.
+
+If BRANDING RESEARCH FINDINGS is empty, respond with an empty `branding`
+list rather than guessing or erroring — nothing to extract yet.
 
 For each college whose findings state a brand color (hex) or a Wikimedia
 Commons logo filename, add one entry to `branding`. Copy the hex code and
@@ -866,9 +869,12 @@ easy-to-check thing from deadlines_research_agent's own small, targeted
 research pass below — a college's application deadlines. Nothing else.
 
 DEADLINES RESEARCH FINDINGS:
-{{deadlines_research_findings}}
+{{deadlines_research_findings?}}
 
 Today's date is {datetime.date.today().isoformat()}.
+
+If DEADLINES RESEARCH FINDINGS is empty, respond with an empty `deadlines`
+list rather than guessing or erroring — nothing to extract yet.
 
 For each application deadline the findings state, add one entry to
 `deadlines` with its college_name, kind, and ISO date.
@@ -1034,10 +1040,13 @@ testing policy is its own requirement, each recommendation-letter rule is
 its own requirement, and so on.
 
 RAW RESEARCH FINDINGS:
-{{raw_research_findings}}
+{{raw_research_findings?}}
 
 AVAILABLE SOURCES (short_id -> title/url/domain/claims):
-{{sources}}
+{{sources?}}
+
+If RAW RESEARCH FINDINGS is empty, respond with an empty `requirements`
+list rather than guessing or erroring — nothing to extract yet.
 
 Today's date is {datetime.date.today().isoformat()}.
 

@@ -255,15 +255,16 @@ class College(FirestoreModel):
 
 class PipelineProgress(FirestoreModel):
     """Single doc (id always "current"), overwritten at the start of every
-    Orchestrator run — total/completed college counts plus a start
-    timestamp, purely so the frontend can render "researching college 2 of
-    4" and a rough time-remaining estimate while a run is in flight. Not
-    used for anything else; the real per-agent detail already lives in
-    AgentRun docs (Agent Activity page)."""
+    Orchestrator run — total/completed college counts, purely so the
+    frontend can render "N of M colleges researched" while a run is in
+    flight. No `started_at`/ETA: colleges are now researched concurrently
+    (orchestrator_agent.py's PerCollegeResearchAndExtraction), so a single
+    "time remaining" estimate has no one consistent per-college pace to
+    extrapolate from. Not used for anything else; the real per-agent detail
+    already lives in AgentRun docs (Agent Activity page)."""
 
     total_colleges: int
     completed_colleges: int = 0
-    started_at: datetime
 
 
 # --- users/{userId}/colleges/{collegeId}/requirements/{requirementId} -------

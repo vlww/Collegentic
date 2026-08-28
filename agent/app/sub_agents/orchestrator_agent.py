@@ -45,15 +45,20 @@ an approval step here would also contradict § Welcome / Initial Setup's
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 
 from google.adk.agents import BaseAgent, LlmAgent, ParallelAgent, SequentialAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event, EventActions
+from google.adk.events import Event
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools import ToolContext
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.utils.context_utils import Aclosing
+from google.genai import types
 
 from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
@@ -127,63 +132,81 @@ per_college_pipeline = ParallelAgent(
     sub_agents=[detailed_research_pipeline, quick_research_pipeline],
 )
 
+# See _research_one_college's use of this, below, for why it exists.
+_COLLEGE_RESEARCH_TIMEOUT_SECONDS = 240
+
 
 class PerCollegeResearchAndExtraction(BaseAgent):
-    """Runs per_college_pipeline once per college in `new_college_names`,
-    one college at a time, instead of researching every newly-requested
-    college in a single batched call.
+    """Runs per_college_pipeline for EVERY college in `new_college_names`
+    concurrently — a separate, fully isolated child session per college —
+    instead of researching every newly-requested college in a single
+    batched call, or one college fully at a time.
 
-    Found live, in two steps. First: college_research_agent and
+    Found live, in three steps. First: college_research_agent and
     requirements_agent each write ALL researched colleges' data to session
     state in ONE LLM call (their `output_key` replaces the whole value), so
     with every college batched into that one call, every college's data
-    became known at the exact same instant — no matter how requirements_
-    agent.py's persist stage staggered its OWN Firestore writes afterward (a
-    few hundred ms apart), the entire reveal was compressed into the last
-    few seconds of an otherwise multi-minute run. Looping per college instead
-    (below) fixed that — each college's row visibly completes at the real
-    moment ITS OWN research finishes, spread naturally across the whole run.
+    became known at the exact same instant. Second: looping per college
+    SEQUENTIALLY (an earlier version of this class) fixed that — each
+    college's row visibly completed at the real moment ITS OWN research
+    finished — but for a student requesting several colleges at once, total
+    wait time was N colleges x one college's research time, one full research
+    pass strictly after another.
 
-    Second, within a single college's own research: college_research_agent's
-    single broad research pass (deadlines, testing, recommendations, essay
-    prompts, portfolio, interview, financial aid, ...) had to fully finish
-    before ANY of it — including color/logo/deadlines, which have nothing to
-    do with essay prompts — could be extracted and shown. per_college_
-    pipeline (above) is what fixes that: quick_research_pipeline runs its
-    own small, narrowly-scoped research calls genuinely CONCURRENTLY with
-    detailed_research_pipeline's broad one, so color/logo/deadlines land as
-    soon as those much smaller calls finish, not after the whole broad one
-    does — and branding (color/logo) is researched and extracted in its OWN
-    first step, before deadlines' own step even starts, so it doesn't wait
-    on deadline queries either.
+    Third, and what this class does now: colleges are researched
+    CONCURRENTLY. Each college's per_college_pipeline run gets its own
+    throwaway session (a fresh Runner + InMemorySessionService, mirroring
+    exactly how AgentTool.run_async spins up a child session per call — see
+    google/adk/tools/agent_tool.py) seeded with ONLY `new_college_names`
+    (this one college) and `college_name_to_id`. This isn't just a faster
+    version of the old per-college loop — it's a REQUIRED fix, not an
+    optimization: every research/extraction agent in per_college_pipeline
+    writes its findings to a session-state `output_key`
+    (raw_research_findings, branding_research_findings, ...), and
+    collect_research_sources_callback (app/callbacks.py) scans this
+    session's ENTIRE event history for grounding sources. Running multiple
+    colleges' pipelines against the SAME shared session concurrently would
+    let one college's output_key writes clobber another's mid-flight, and
+    would mix each college's citation sources into the same pool — wrong,
+    not just messy (e.g. an MIT essay requirement could end up citing a
+    source that's actually about Rice). Fully separate sessions make that
+    impossible: each college's state lives in its own isolated dict, with
+    nothing to collide with a sibling researched at the same moment.
 
-    Every college's row already exists by the time this loop runs —
-    college_intake_agent creates them all up front (see its module
-    docstring for why that's fast enough to do eagerly). This loop instead
-    owns each college's loading-spinner lifecycle: flips `researching` true
-    and `research_stage` to "logo" right as it reaches that college (see
-    firestore_tools.start_college_research), then clears both and advances
-    PipelineProgress once its requirements are persisted
-    (firestore_tools.finish_college_research).
+    Firestore writes (every ft.* call in every persist callback throughout
+    per_college_pipeline) are NOT scoped to a session, though — they're
+    keyed by user_id, so they land in the same place regardless of which
+    child session made them, which is exactly what lets the Colleges table
+    fill in correctly with every college's real data despite each running
+    in total isolation from the others.
 
-    A college's research genuinely failing partway through still aborts the
-    whole turn here (no per-college try/except) — consistent with
-    api.py's _run_pipeline_with_auto_restart, which retries the entire
-    Orchestrator turn on any failure; college_intake_agent already treats
-    any college with zero Requirement docs (including one this loop hadn't
-    reached yet) as still needing research, so a retry picks up exactly
-    where this loop left off rather than re-doing already-persisted work.
+    Every college's row already exists by the time this runs — college_
+    intake_agent creates them all up front (see its module docstring for
+    why that's fast enough to do eagerly). This class starts EVERY
+    college's loading-spinner lifecycle up front too (all rows flip to
+    `researching=true`, `research_stage="logo"` together — see firestore_
+    tools.start_college_research), then clears each one and advances
+    PipelineProgress as ITS OWN task finishes, independent of the others.
+
+    Any single college's research failing still aborts the whole turn
+    (asyncio.TaskGroup cancels every other in-flight college's task the
+    moment one raises) — consistent with api.py's
+    _run_pipeline_with_auto_restart, which retries the entire Orchestrator
+    turn on any failure; college_intake_agent already treats any college
+    with zero Requirement docs (including one whose concurrent research got
+    cancelled here) as still needing research, so a retry picks up exactly
+    where this left off rather than re-doing already-persisted work.
     """
 
     def __init__(self, name: str = "per_college_research_and_extraction"):
         super().__init__(
             name=name,
             description=(
-                "Researches and extracts requirements for each newly "
-                "requested college one at a time, so the Colleges table "
-                "fills in progressively rather than all at once."
+                "Researches and extracts requirements for every newly "
+                "requested college CONCURRENTLY (each in its own isolated "
+                "session), so the Colleges table fills in for every "
+                "requested college at once rather than one at a time."
             ),
-            sub_agents=[per_college_pipeline],
         )
 
     async def _run_async_impl(
@@ -194,43 +217,102 @@ class PerCollegeResearchAndExtraction(BaseAgent):
             return
         user_id = ctx.session.user_id
         # college_intake_agent already created every one of these colleges'
-        # rows (and populated this mapping) up front — this loop only
-        # drives the loading-spinner state, never row creation.
+        # rows (and populated this mapping) up front — this only drives the
+        # loading-spinner state, never row creation.
         name_to_id: dict[str, str] = dict(
             ctx.session.state.get("college_name_to_id", {})
         )
+
+        # Every row starts spinning together, not one at a time — matches
+        # the concurrency below (all colleges' research genuinely starts at
+        # the same moment).
         for college_name in college_names:
-            college_id = name_to_id[college_name]
-            ft.start_college_research(user_id, college_id)
-            yield Event(
-                author=self.name,
-                actions=EventActions(
-                    state_delta={
-                        # Scopes state down to just this one college before
-                        # delegating — every research agent in both
-                        # branches keys its `{new_college_names?}` template
-                        # off this same list, so a single-item list here is
-                        # what makes each of their output keys
-                        # (raw_research_findings, branding_research_
-                        # findings, deadlines_research_findings, and
-                        # everything downstream of them) cover exactly this
-                        # one college.
-                        "new_college_names": [college_name],
-                    }
-                ),
-            )
-            async with Aclosing(per_college_pipeline.run_async(ctx)) as agen:
-                async for event in agen:
-                    yield event
             try:
-                ft.finish_college_research(user_id, college_id)
-                ft.advance_pipeline_progress(user_id)
+                ft.start_college_research(user_id, name_to_id[college_name])
             except Exception:
                 logger.warning(
-                    "Failed to clear researching flag / advance progress for %r",
-                    college_name,
+                    "Failed to start research state for %r", college_name,
                     exc_info=True,
                 )
+
+        yield Event(author=self.name)
+
+        # One Runner, reused for every college's own throwaway session —
+        # this is the exact same mechanism a production ADK server already
+        # relies on to serve many concurrent real USERS against one shared
+        # agent tree (see fast_api_app.py's own top-level `runner`), just
+        # applied to N colleges within a single request instead of N users
+        # across many requests.
+        child_runner = Runner(
+            app_name=ctx.session.app_name,
+            agent=per_college_pipeline,
+            artifact_service=ctx.artifact_service,
+            session_service=InMemorySessionService(),
+            memory_service=InMemoryMemoryService(),
+            credential_service=ctx.credential_service,
+            plugins=list(ctx.plugin_manager.plugins),
+        )
+
+        async def _research_one_college(college_name: str) -> None:
+            college_id = name_to_id[college_name]
+            session = await child_runner.session_service.create_session(
+                app_name=child_runner.app_name,
+                user_id=user_id,
+                state={
+                    "new_college_names": [college_name],
+                    "college_name_to_id": {college_name: college_id},
+                },
+            )
+
+            async def _drain() -> None:
+                async with Aclosing(
+                    child_runner.run_async(
+                        user_id=user_id,
+                        session_id=session.id,
+                        new_message=types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text="research")],
+                        ),
+                    )
+                ) as agen:
+                    async for _event in agen:
+                        pass
+
+            try:
+                # A ceiling so one college's real research can never hang
+                # this whole request forever. Found live: running several
+                # colleges' Gemini calls fully concurrently occasionally
+                # produced what looked like a hung gRPC channel — no
+                # response, no error, no timeout — rather than a slow-but-
+                # eventually-completing call; asyncio.TaskGroup itself has
+                # no built-in timeout, so without this a single stuck call
+                # blocked every other (already-in-progress, otherwise
+                # completing fine) college indefinitely. Generous enough
+                # not to trip on a genuinely slow real research pass — a
+                # timeout here still raises, which (like any other failure
+                # in this loop) aborts and lets api.py's
+                # _run_pipeline_with_auto_restart retry the whole turn
+                # once, rather than hanging forever with no recovery path
+                # at all.
+                await asyncio.wait_for(
+                    _drain(), timeout=_COLLEGE_RESEARCH_TIMEOUT_SECONDS
+                )
+            finally:
+                try:
+                    ft.finish_college_research(user_id, college_id)
+                    ft.advance_pipeline_progress(user_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to clear researching flag / advance progress "
+                        "for %r", college_name, exc_info=True,
+                    )
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                for college_name in college_names:
+                    tg.create_task(_research_one_college(college_name))
+        finally:
+            await child_runner.close()
 
 
 per_college_research_and_extraction = PerCollegeResearchAndExtraction()

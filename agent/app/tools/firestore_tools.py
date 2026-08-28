@@ -244,9 +244,10 @@ def create_college_placeholder(user_id: str, name: str) -> str:
     the table so a judge sees the full requested list take shape fast
     (this is pure Firestore bookkeeping, no LLM/search call, so it's cheap
     to do for every college up front), before the actual per-college
-    research loop (orchestrator_agent.py's PerCollegeResearchAndExtraction)
-    works through them one at a time. `created_at` is what
-    get_tracked_colleges sorts by, so rows land in request order."""
+    research (orchestrator_agent.py's PerCollegeResearchAndExtraction) runs
+    for every college concurrently. `created_at` is what
+    get_tracked_colleges sorts by, so rows land in request order — research
+    completion order can (and usually does) differ."""
     return save_college(user_id, College(name=name, created_at=now()))
 
 
@@ -672,12 +673,15 @@ def start_pipeline_progress(user_id: str, total_colleges: int) -> None:
     """Called once, right when the Orchestrator knows the full list of
     colleges to research for this run (before any of their rows exist yet
     — see college_intake_agent.py) — this is what lets the frontend show
-    "researching college 2 of 4" the instant a run starts, not only once
-    every college's row has already appeared. Overwrites any previous run's
-    doc; only one run is ever in flight per user at a time."""
-    progress = PipelineProgress(
-        total_colleges=total_colleges, completed_colleges=0, started_at=now()
-    )
+    "2 of 4 colleges researched" the instant a run starts, not only once
+    every college's row has already appeared. Colleges are now researched
+    concurrently (see orchestrator_agent.py's PerCollegeResearchAndExtraction),
+    so completed_colleges climbs in whatever order they actually finish in,
+    not necessarily 1, 2, 3... — the frontend's progress bar is worded as a
+    plain count for exactly this reason, not "college N" implying a single
+    one currently in progress. Overwrites any previous run's doc; only one
+    run is ever in flight per user at a time."""
+    progress = PipelineProgress(total_colleges=total_colleges, completed_colleges=0)
     _pipeline_progress_doc(user_id).set(
         progress.model_dump(by_alias=True, exclude={"id"}, exclude_none=True)
     )
@@ -685,7 +689,9 @@ def start_pipeline_progress(user_id: str, total_colleges: int) -> None:
 
 def advance_pipeline_progress(user_id: str) -> None:
     """Called once per college, right after its requirements are persisted
-    — see requirements_agent.py's _persist_requirements_and_sources."""
+    — see orchestrator_agent.py's PerCollegeResearchAndExtraction. Uses an
+    atomic Firestore increment specifically because colleges are researched
+    concurrently now, so multiple calls can genuinely race each other."""
     _pipeline_progress_doc(user_id).update(
         {"completedColleges": firestore.Increment(1)}
     )

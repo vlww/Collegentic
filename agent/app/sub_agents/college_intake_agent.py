@@ -24,18 +24,19 @@ name was already resolved by the Orchestrator's own parsing step before
 this ever runs), so doing it for the whole list up front is fast, and lets
 a judge see the full requested list take shape almost immediately instead
 of waiting for each college's (much slower) research to finish before the
-next one's row even appears. The actual per-college RESEARCH still happens
-one college at a time, sequentially, in PerCollegeResearchAndExtraction
+next one's row even appears. The actual per-college RESEARCH happens for
+every college CONCURRENTLY, in PerCollegeResearchAndExtraction
 (orchestrator_agent.py) — that's what the loading-spinner cells key off,
-not row existence. Sets:
+not row existence; rows can (and usually do) finish in a different order
+than they were requested in, since each college's own research pace
+varies. Sets:
 - `college_name_to_id`: every requested name -> its Firestore college id
 - `new_college_names`: names that didn't already exist, OR did but have zero
   Requirement docs (a stub from a prior run interrupted by an error before
   research finished) — these are the ones that actually need research (see
   .agents-cli-spec.md § Cost Control: "only perform new research when a
   school is newly added", extended to also cover "or was never actually
-  researched") — IN THE ORDER the student listed them, since that's the
-  order they'll be researched and shown in.
+  researched").
 
 Also starts this run's PipelineProgress doc (total = len(new_college_names))
 the moment that count is known.

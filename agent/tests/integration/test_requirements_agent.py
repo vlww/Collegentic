@@ -116,17 +116,17 @@ def test_full_pipeline_researches_and_persists_requirements(user_id: str) -> Non
     assert all(run.status.value == "completed" for run in runs)
 
 
-def test_multiple_colleges_are_researched_one_at_a_time_not_batched(
+def test_multiple_colleges_are_researched_concurrently(
     user_id: str,
 ) -> None:
     """Regression test for PerCollegeResearchAndExtraction
     (orchestrator_agent.py): with two newly requested colleges,
-    college_research_agent must run TWICE (once per college, each a
-    separate AgentRun) rather than once covering both — and the second
-    college's research run must start only after the first college's
-    requirements are already persisted, proving the colleges are genuinely
-    researched and revealed to the Colleges table one at a time rather than
-    both landing in Firestore at the same moment."""
+    college_research_agent must run TWICE (once per college, each in its
+    own isolated child session/AgentRun) rather than once covering both —
+    and the two runs' time windows must genuinely OVERLAP, proving colleges
+    are researched concurrently (each in a fully isolated session so
+    neither's findings/sources can clobber the other's) rather than one
+    college's whole research pass finishing before the next one starts."""
     from app.sub_agents.orchestrator_agent import college_intake_pipeline
 
     async def _go() -> None:
@@ -183,11 +183,12 @@ def test_multiple_colleges_are_researched_one_at_a_time_not_batched(
         "Expected one requirements_agent run per college, not one batched "
         f"run — got {len(extraction_runs)}"
     )
-    first_extraction, second_research = extraction_runs[0], research_runs[1]
-    assert first_extraction.completed_at is not None
-    # The second college's research must start only once the first
-    # college's whole research-through-extraction pass has actually
-    # finished (Firestore already has its requirements) — i.e. genuinely
-    # sequential, one college fully revealed before the next begins, not
-    # both colleges' data becoming known at the same moment.
-    assert second_research.started_at >= first_extraction.completed_at
+    first_research, second_research = research_runs
+    assert first_research.completed_at is not None
+    assert second_research.completed_at is not None
+    # Genuine concurrency: the second college's research must have
+    # STARTED before the first college's research FINISHED — an earlier,
+    # strictly sequential version of this pipeline would have the second
+    # start only once the first (research through extraction) was fully
+    # done, which this asserts is no longer the case.
+    assert second_research.started_at < first_research.completed_at
