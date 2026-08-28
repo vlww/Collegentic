@@ -51,8 +51,8 @@ EscalationChecker's precedent (deep-search/app/agent.py) of a custom
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import time
 from collections.abc import AsyncGenerator
 
 from google.adk.agents import BaseAgent
@@ -129,8 +129,14 @@ class CollegeIntakeAgent(BaseAgent):
                     # (rather than all created within the same instant) so
                     # requesting several colleges at once still reveals one
                     # placeholder row at a time — cheap to do since this is
-                    # just a Firestore write, no LLM/search call.
-                    time.sleep(0.3)
+                    # just a Firestore write, no LLM/search call. A real
+                    # (event-loop-yielding) `await asyncio.sleep`, not
+                    # `time.sleep` — this whole backend runs as one uvicorn
+                    # process on a single event loop, so a blocking sleep
+                    # here would freeze every other in-flight request
+                    # (including the Colleges page's polling GET) instead of
+                    # just pacing this one.
+                    await asyncio.sleep(0.3)
                 new_id = ft.create_college_placeholder(user_id, name)
                 name_to_id[name] = new_id
                 new_names.append(name)

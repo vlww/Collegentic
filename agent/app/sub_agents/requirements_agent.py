@@ -37,6 +37,7 @@ Orchestrator will use it as-is, immediately after college_research_agent.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import functools
 import html
@@ -783,12 +784,30 @@ or logo.
 Respond with a single raw JSON object matching the RequirementsExtraction schema."""
 
 
-def _persist_requirements_and_sources(callback_context) -> None:
+async def _persist_requirements_and_sources(callback_context) -> None:
     """Writes Requirement + (deduped, per-college) ResearchSource docs, plus
     College.schoolColors/logoUrl/deadlines. Runs as an after_agent_callback
     since output_schema agents can't also call tools mid-turn — this is
     where the structured output actually lands in Firestore, same division
     of labor as citation_replacement_callback in deep-search.
+
+    async, not a plain def, and every pacing pause below is `await
+    asyncio.sleep(...)` rather than `time.sleep(...)` — found live: ADK's
+    BaseAgent calls an after_agent_callback directly on the server's single
+    asyncio event loop (only awaiting it afterward if it returns an
+    awaitable), and this whole backend runs as one uvicorn process with no
+    worker threads. A plain `time.sleep()` here doesn't just pause THIS
+    request — it freezes that one shared event loop for every other
+    in-flight request, including the Colleges page's concurrent polling GET
+    (Colleges.tsx). Every "paced" write below WAS landing in Firestore one
+    at a time as designed, but the frontend's poll couldn't get through to
+    observe any of the intermediate states until this entire callback
+    (several colleges' worth of writes and sleeps) finally finished, so the
+    whole row appeared to jump at once. `await asyncio.sleep(...)` actually
+    yields the event loop, letting a queued poll request run during the
+    pause; `_fetch_college_logo`'s real (and sometimes multi-second)
+    network call is similarly wrapped in `asyncio.to_thread` below so it
+    can't cause the same freeze.
 
     Deliberately staged, not one flat pass, for two reasons: (1) each stage
     below is wrapped so one college's bad data or a transient Firestore/
@@ -872,7 +891,11 @@ def _persist_requirements_and_sources(callback_context) -> None:
         # has been showing this whole time rather than only appearing now. -
         entry = branding_by_name.get(college_name, {})
         try:
-            logo_url = _fetch_college_logo(college_name)
+            # asyncio.to_thread: _fetch_college_logo does real, sometimes
+            # multi-second, synchronous network I/O (urllib) — run off the
+            # event loop so it can't freeze other requests either, same
+            # reasoning as this callback's own async'ified pacing pauses.
+            logo_url = await asyncio.to_thread(_fetch_college_logo, college_name)
             if not logo_url:
                 # Absolute last resort, for a college whose Wikipedia
                 # article itself couldn't be resolved: college_research_
@@ -880,7 +903,9 @@ def _persist_requirements_and_sources(callback_context) -> None:
                 # seal filename.
                 logo_filename = entry.get("logo_commons_filename")
                 if logo_filename:
-                    logo_url = _resolve_commons_logo_url(logo_filename)
+                    logo_url = await asyncio.to_thread(
+                        _resolve_commons_logo_url, logo_filename
+                    )
         except Exception:
             logger.warning(
                 "Logo lookup failed for %r, continuing without one", college_name,
@@ -1058,7 +1083,7 @@ def _persist_requirements_and_sources(callback_context) -> None:
         # long enough for the frontend's poll to actually catch this cell's
         # spinner before it moves to the next one, short enough that four
         # of these barely register against a multi-minute research run.
-        time.sleep(0.6)
+        await asyncio.sleep(0.6)
         try:
             ft.advance_research_stage(user_id, college_id, _NEXT_STAGE_AFTER_DEADLINE[field])
         except Exception:
@@ -1093,7 +1118,7 @@ def _persist_requirements_and_sources(callback_context) -> None:
         chunk_size = max(1, -(-len(college_requirements) // 6))  # ceil division
         for i in range(0, len(college_requirements), chunk_size):
             if i > 0:
-                time.sleep(0.3)
+                await asyncio.sleep(0.3)
             try:
                 ft.save_requirements(
                     user_id, college_requirements[i : i + chunk_size]
