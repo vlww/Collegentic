@@ -872,11 +872,15 @@ async def _persist_branding_and_deadlines(callback_context) -> None:
                     "Failed to save %s deadline for college %r, continuing",
                     field, college_id, exc_info=True,
                 )
-        # Short, deliberate pause before revealing this field resolved —
-        # long enough for the frontend's poll to actually catch this cell's
-        # spinner before it moves to the next one, short enough that four
-        # of these barely register against a multi-minute research run.
-        await asyncio.sleep(0.6)
+        # Deliberate pause before revealing this field resolved. Longer
+        # than a bare "long enough for the frontend's poll to catch it"
+        # (0.6s) — found live: right after color+logo land, four of these
+        # back to back read as one bunched-up burst rather than four
+        # distinct discoveries, even though each write really was separate.
+        # 1.5s is short enough to barely register against the multi-minute
+        # research run as a whole, but long enough for each deadline to
+        # read as its own beat.
+        await asyncio.sleep(1.5)
         try:
             ft.advance_research_stage(user_id, college_id, _NEXT_STAGE_AFTER_DEADLINE[field])
         except Exception:
@@ -1162,42 +1166,29 @@ async def _persist_requirements_and_sources(callback_context) -> None:
                 exc_info=True,
             )
 
-    # --- Save the requirement docs in small paced chunks, not one flat
-    # write, with `requirements_total` set first — this is what lets the
-    # frontend show a requirements-saved-so-far progress bar (see College.
-    # requirements_total) instead of the count silently jumping from 0 to
-    # its final value. research_stage advances to "requirements" the
-    # moment branding_and_deadlines_agent finishes (see that agent's
-    # _NEXT_STAGE_AFTER_DEADLINE), so by the time this runs the table is
-    # already showing that spinner, waiting on exactly this. -------------
+    # --- Save every requirement doc in one flat write per college, as soon
+    # as it's ready — no artificial pacing here. This extraction is one
+    # atomic LLM call (see _REQUIREMENTS_INSTRUCTION): every requirement
+    # becomes known at the exact same instant, so staggering the WRITES
+    # afterward (an earlier version of this function did, in small paced
+    # chunks) only ever faked a "still finding things" progress bar for
+    # data that had already fully arrived — the real "still working" wait
+    # is the LLM call itself, which research_stage == "requirements" (set
+    # the moment branding_and_deadlines_agent finishes, above) already
+    # covers: CollegeTable.tsx shows its own client-side simulated progress
+    # for that whole stretch, then swaps to this real, final count the
+    # instant it lands. -----------------------------------------------
     requirements_by_college: dict[str, list[Requirement]] = {}
     for req in requirements:
         requirements_by_college.setdefault(req.college_id, []).append(req)
     for college_id, college_requirements in requirements_by_college.items():
         try:
-            ft.set_requirements_total(user_id, college_id, len(college_requirements))
+            ft.save_requirements(user_id, college_requirements)
         except Exception:
             logger.warning(
-                "Failed to set requirements_total for college %r, continuing",
+                "Failed to save requirements for college %r, continuing",
                 college_id, exc_info=True,
             )
-        # A fixed ~6 visible steps regardless of how many requirements this
-        # college has, rather than one write per requirement (which could
-        # be dozens of extra Firestore round trips) or one flat write (no
-        # progress bar to show at all).
-        chunk_size = max(1, -(-len(college_requirements) // 6))  # ceil division
-        for i in range(0, len(college_requirements), chunk_size):
-            if i > 0:
-                await asyncio.sleep(0.3)
-            try:
-                ft.save_requirements(
-                    user_id, college_requirements[i : i + chunk_size]
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to save requirements for college %r, continuing",
-                    college_id, exc_info=True,
-                )
 
     if skipped_colleges:
         logger.warning(

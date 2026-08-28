@@ -56,10 +56,6 @@ export interface College {
    * ONE loading spinner at a time, in order, rather than every empty cell
    * spinning together. */
   researchStage: string | null;
-  /** Set while requirements are being saved for this college — lets
-   * CollegeTable render a "3 of 12 requirements" progress bar instead of a
-   * growing, denominator-less count. Null before/after that window. */
-  requirementsTotal: number | null;
 }
 
 /** Mirrors agent/app/schemas.py's PipelineProgress — polled while a

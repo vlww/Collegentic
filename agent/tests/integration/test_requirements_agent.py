@@ -156,11 +156,9 @@ def test_multiple_colleges_are_researched_one_at_a_time_not_batched(
     for college in colleges:
         assert len(ft.get_requirements(user_id, [college.id])) > 0
         # Fully done by the time the whole pipeline finishes — not left
-        # stuck showing a loading spinner (or a requirements progress bar)
-        # forever.
+        # stuck showing a loading spinner forever.
         assert college.researching is False
         assert college.research_stage is None
-        assert college.requirements_total is None
         assert college.created_at is not None
 
     progress = ft.get_pipeline_progress(user_id)

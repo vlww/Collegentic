@@ -235,22 +235,19 @@ class College(FirestoreModel):
     # "requirements", or null (before research starts, or once it's fully
     # done). Drives exactly where CollegeTable.tsx shows its ONE loading
     # spinner at a time — "logo" first (color is applied silently during
-    # this same window, since it's already known the instant extraction
-    # completes and has no lookup of its own to wait on), then each
-    # deadline kind in order, then "requirements" last. Deliberately more
-    # precise than "researching=true and this field is still empty": that
-    # made every still-empty cell spin at once the moment a college started,
-    # reading as "the whole row loading together" rather than one thing
-    # being looked up at a time.
+    # this same window, since branding_and_deadlines_agent already has it
+    # the instant its own small/fast extraction call completes, with no
+    # separate lookup of its own to wait on), then each deadline kind in
+    # order, then "requirements" last — which sits on requirements_agent's
+    # own, much slower, LLM call for as long as that takes, with no further
+    # sub-stages of its own (CollegeTable.tsx fakes a client-side "still
+    # finding things" progress bar for that stretch instead, since nothing
+    # server-side can give a real one out of a single atomic LLM call).
+    # Deliberately more precise than "researching=true and this field is
+    # still empty": that made every still-empty cell spin at once the
+    # moment a college started, reading as "the whole row loading together"
+    # rather than one thing being looked up at a time.
     research_stage: str | None = None
-    # Set once extraction knows how many requirements this college has,
-    # right before saving them (in small paced batches, not all in one
-    # write) — the frontend divides however many Requirement docs currently
-    # exist by this to render a progress bar instead of a growing,
-    # denominator-less count. Reset to null once every requirement is
-    # actually saved, at which point the frontend swaps the bar for the
-    # final "N tracked" count.
-    requirements_total: int | None = None
 
 
 # --- users/{userId}/pipelineProgress/current ---------------------------------

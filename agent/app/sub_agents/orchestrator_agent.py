@@ -114,9 +114,9 @@ class PerCollegeResearchAndExtraction(BaseAgent):
     docstring for why that's fast enough to do eagerly). This loop instead
     owns each college's loading-spinner lifecycle: flips `researching` true
     and `research_stage` to "logo" right as it reaches that college (see
-    firestore_tools.start_college_research), then clears both (plus
-    `requirements_total`) and advances PipelineProgress once its
-    requirements are persisted (firestore_tools.finish_college_research).
+    firestore_tools.start_college_research), then clears both and advances
+    PipelineProgress once its requirements are persisted
+    (firestore_tools.finish_college_research).
 
     A college's research genuinely failing partway through still aborts the
     whole turn here (no per-college try/except) — consistent with

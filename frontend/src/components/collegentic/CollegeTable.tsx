@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
@@ -118,8 +118,9 @@ function DeadlineCell({ iso, active }: { iso: string | null; active: boolean }) 
   const crunch = days >= 0 && days <= 14;
   return (
     // Keyed by the date itself: a deadline landing live (research writes
-    // them one college at a time — see requirements_agent.py Stage 3)
-    // pops in on its own beat instead of silently replacing the "-".
+    // them one field at a time — see requirements_agent.py's
+    // branding_and_deadlines_agent) pops in on its own beat instead of
+    // silently replacing the "-".
     <span
       key={iso}
       className={cn(
@@ -132,31 +133,66 @@ function DeadlineCell({ iso, active }: { iso: string | null; active: boolean }) 
   );
 }
 
-/** Shown in the Requirements cell while College.requirementsTotal is set —
- * requirements are saved in small paced batches (see requirements_agent.py),
- * so `done` climbs visibly toward `total` instead of the count jumping
- * straight from nothing to its final value.
+/**
+ * Shown in the Requirements cell once deadlines are done and
+ * research_stage moves to "requirements" — the last, and by far the
+ * slowest, part of a college's research (requirements_agent.py's one big
+ * structured-extraction LLM call). Unlike color/logo/deadlines, the
+ * backend genuinely has no incremental signal to report here: every
+ * requirement becomes known at the same instant, in one response, so
+ * there's no real "3 of 12 found" count to show while it's running.
  *
- * `done` is clamped to `total` — a purely defensive display fix (see
- * college_intake_agent.py's `not match.researching` guard for the real
- * fix): a college's saved-requirement count is every Requirement doc that
- * currently exists for it, which briefly exceeded `total` when a bug let
- * two research passes for the same college run at once (each setting its
- * OWN total, while both runs' saved docs counted toward the same visible
- * `done`) — this is the fallback that keeps the label from ever reading
- * something nonsensical like "36/18" even if that race reappears. */
-function RequirementsProgressCell({ done, total }: { done: number; total: number }) {
-  const clampedDone = Math.min(done, total);
-  const fraction = total > 0 ? clampedDone / total : 0;
+ * Rather than sit on a static spinner for that whole stretch (previously:
+ * "Researching…" the entire time, then the real count appearing all at
+ * once), this fakes a plausible "still finding things" climb entirely
+ * client-side — irregular jump sizes and irregular pauses between them
+ * (never a smooth/linear fill, which reads as fake in a different way),
+ * capped well under 100% so it can never claim to be done before the real
+ * count actually lands. Deliberately unlabeled (no "N of M" — there IS no
+ * M yet) and replaced outright, the instant real data arrives, by the
+ * actual "N tracked" count one tier up in CollegeTable's render — this
+ * component never learns or shows a real number itself.
+ */
+function FakeRequirementsProgressCell() {
+  // Capped at 90%, never 100% — this bar must never visually finish
+  // before the real count swaps in, or the swap reads as a bug (a full
+  // bar suddenly replaced by something else) rather than a reveal.
+  const CAP = 0.9;
+  const [fraction, setFraction] = useState(0.08);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    function scheduleTick() {
+      // Irregular delay, not a fixed interval — a metronome-steady climb
+      // reads as an animation, not as sporadic real discovery.
+      const delay = 700 + Math.random() * 1600;
+      timeoutId = setTimeout(() => {
+        if (cancelled) return;
+        setFraction((f) => {
+          if (f >= CAP) return f;
+          // Irregular jump size too, including the occasional near-zero
+          // "stall" — a few skipped/uneven spots read as more genuine
+          // than a perfectly even climb.
+          const jump = Math.random() < 0.25 ? 0.01 : 0.05 + Math.random() * 0.12;
+          return Math.min(CAP, f + jump);
+        });
+        scheduleTick();
+      }, delay);
+    }
+    scheduleTick();
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, []);
+
   return (
-    <div className="flex items-center gap-2" title={`${clampedDone} of ${total} requirements found`}>
-      <span className="text-xs tabular-nums text-muted-foreground">
-        {clampedDone}/{total}
-      </span>
+    <div className="flex items-center gap-2" title="Finding requirements…">
       <div className="h-1.5 w-16 shrink-0 rounded-full bg-secondary overflow-hidden">
         <div
-          className="h-full rounded-full bg-navy transition-[width] duration-300 ease-out"
-          style={{ width: `${Math.min(100, Math.max(4, fraction * 100))}%` }}
+          className="h-full rounded-full bg-navy transition-[width] duration-700 ease-out"
+          style={{ width: `${fraction * 100}%` }}
         />
       </div>
     </div>
@@ -308,35 +344,12 @@ export function CollegeTable({
                   />
                 </td>
                 <td className={BODY_CELL}>
-                  {/* `college.researching &&`: requirementsTotal alone
-                      isn't enough — it's only meaningful while THIS
-                      college is actively being researched. Gating on
-                      researching too means a fully-researched row can
-                      never show the progress bar again, even if
-                      requirementsTotal were ever left stale (see
-                      RequirementsProgressCell's docstring for the bug this
-                      guards against). */}
-                  {college.researching && college.requirementsTotal != null ? (
-                    <RequirementsProgressCell
-                      done={requirements.length}
-                      total={college.requirementsTotal}
-                    />
-                  ) : requirements.length === 0 ? (
-                    college.researching ? (
-                      <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Researching…
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">Not researched yet</span>
-                    )
-                  ) : (
-                    // Keyed by count: requirements_agent.py's Stage 5 now
-                    // saves requirements in small paced batches (see
-                    // RequirementsProgressCell above for while that's still
-                    // in progress), so this pops in the moment the final
-                    // batch lands instead of silently replacing the
-                    // progress bar.
+                  {requirements.length > 0 ? (
+                    // Keyed by count: the moment the real, final list
+                    // lands (one flat write — see requirements_agent.py),
+                    // this pops in and permanently replaces whatever was
+                    // showing before (the fake progress cell below, or the
+                    // plain "Researching…" spinner during logo/deadlines).
                     <span
                       key={requirements.length}
                       className="inline-flex items-center gap-1.5 animate-in fade-in zoom-in-90 duration-500"
@@ -348,6 +361,15 @@ export function CollegeTable({
                           {needsVerification} to verify
                         </span>
                       )}
+                    </span>
+                  ) : !college.researching ? (
+                    <span className="text-muted-foreground">Not researched yet</span>
+                  ) : college.researchStage === "requirements" ? (
+                    <FakeRequirementsProgressCell />
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Researching…
                     </span>
                   )}
                 </td>

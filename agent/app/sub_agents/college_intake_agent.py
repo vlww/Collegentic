@@ -128,14 +128,14 @@ class CollegeIntakeAgent(BaseAgent):
                 # same college_id — both eventually save their own
                 # Requirement docs with nothing deduping between them.
                 # Found live: this is what produced a Requirements column
-                # showing "36/18" (each run's persist stage sets
-                # requirementsTotal to ITS OWN count, but the frontend's
-                # done-count is every Requirement doc that exists for the
-                # college, i.e. both runs' saved docs added together).
-                # `researching` is exactly the "already actively being
-                # worked on" signal (see College.researching's docstring),
-                # so a college already mid-research is left out of
-                # new_names here rather than re-entering the pipeline.
+                # reading e.g. "36" where 18 was correct (each run
+                # independently extracts and saves its own full set,
+                # doubled up against the same college with nothing to
+                # dedupe them). `researching` is exactly the "already
+                # actively being worked on" signal (see College.
+                # researching's docstring), so a college already
+                # mid-research is left out of new_names here rather than
+                # re-entering the pipeline.
                 if match.id not in researched_ids and not match.researching:
                     new_names.append(name)
             else:

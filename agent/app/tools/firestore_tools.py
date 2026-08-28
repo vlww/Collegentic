@@ -266,19 +266,12 @@ def advance_research_stage(user_id: str, college_id: str, stage: str) -> None:
     _colleges(user_id).document(college_id).update({"researchStage": stage})
 
 
-def set_requirements_total(user_id: str, college_id: str, total: int) -> None:
-    """Lets the frontend render a requirements-saved-so-far progress bar
-    instead of a growing, denominator-less count — see
-    College.requirements_total's docstring."""
-    _colleges(user_id).document(college_id).update({"requirementsTotal": total})
-
-
 def finish_college_research(user_id: str, college_id: str) -> None:
     """Called once this college's requirements are fully persisted — clears
     every transient in-progress signal so no cell is left showing a
-    spinner or an in-progress bar forever."""
+    spinner forever."""
     _colleges(user_id).document(college_id).update(
-        {"researching": False, "researchStage": None, "requirementsTotal": None}
+        {"researching": False, "researchStage": None}
     )
 
 
