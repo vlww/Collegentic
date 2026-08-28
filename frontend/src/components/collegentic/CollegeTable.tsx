@@ -133,6 +133,11 @@ function DeadlineCell({ iso, active }: { iso: string | null; active: boolean }) 
   );
 }
 
+// Fake count never reaches this — real data always swaps in first in
+// practice, but capping short of it means even a slow real response can't
+// make the fake count and the real one collide/overshoot on screen.
+const _FAKE_REQUIREMENTS_CAP = 11;
+
 /**
  * Shown in the Requirements cell once deadlines are done and
  * research_stage moves to "requirements" — the last, and by far the
@@ -145,20 +150,18 @@ function DeadlineCell({ iso, active }: { iso: string | null; active: boolean }) 
  * Rather than sit on a static spinner for that whole stretch (previously:
  * "Researching…" the entire time, then the real count appearing all at
  * once), this fakes a plausible "still finding things" climb entirely
- * client-side — irregular jump sizes and irregular pauses between them
- * (never a smooth/linear fill, which reads as fake in a different way),
- * capped well under 100% so it can never claim to be done before the real
- * count actually lands. Deliberately unlabeled (no "N of M" — there IS no
- * M yet) and replaced outright, the instant real data arrives, by the
- * actual "N tracked" count one tier up in CollegeTable's render — this
- * component never learns or shows a real number itself.
+ * client-side, in the same "N tracked" shape the real final label uses —
+ * a count from 1 up to _FAKE_REQUIREMENTS_CAP, occasionally skipping a
+ * number, with irregular pauses between ticks (never a smooth/linear
+ * climb, which reads as fake in a different way). The count is fake —
+ * nobody has actually found "6 requirements" at that moment — but reads
+ * far more like real incremental progress than an unlabeled bar alone.
+ * Replaced outright, the instant real data arrives, by the actual
+ * "N tracked" count one tier up in CollegeTable's render — this component
+ * never learns or shows a real number itself.
  */
 function FakeRequirementsProgressCell() {
-  // Capped at 90%, never 100% — this bar must never visually finish
-  // before the real count swaps in, or the swap reads as a bug (a full
-  // bar suddenly replaced by something else) rather than a reveal.
-  const CAP = 0.9;
-  const [fraction, setFraction] = useState(0.08);
+  const [count, setCount] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,16 +169,16 @@ function FakeRequirementsProgressCell() {
     function scheduleTick() {
       // Irregular delay, not a fixed interval — a metronome-steady climb
       // reads as an animation, not as sporadic real discovery.
-      const delay = 700 + Math.random() * 1600;
+      const delay = 900 + Math.random() * 1900;
       timeoutId = setTimeout(() => {
         if (cancelled) return;
-        setFraction((f) => {
-          if (f >= CAP) return f;
-          // Irregular jump size too, including the occasional near-zero
-          // "stall" — a few skipped/uneven spots read as more genuine
-          // than a perfectly even climb.
-          const jump = Math.random() < 0.25 ? 0.01 : 0.05 + Math.random() * 0.12;
-          return Math.min(CAP, f + jump);
+        setCount((c) => {
+          if (c >= _FAKE_REQUIREMENTS_CAP) return c;
+          // Skip a number sometimes (+2) rather than always +1 — a
+          // perfectly steady 1,2,3,4... climb reads as an animation, not
+          // as things being found one at a time.
+          const step = Math.random() < 0.4 ? 2 : 1;
+          return Math.min(_FAKE_REQUIREMENTS_CAP, c + step);
         });
         scheduleTick();
       }, delay);
@@ -187,8 +190,14 @@ function FakeRequirementsProgressCell() {
     };
   }, []);
 
+  // +2 headroom so even the capped count never visually fills the bar —
+  // same "must never look finished before the real count swaps in" reason
+  // the count itself is capped short of any plausible real total.
+  const fraction = count / (_FAKE_REQUIREMENTS_CAP + 2);
+
   return (
     <div className="flex items-center gap-2" title="Finding requirements…">
+      <span className="text-xs tabular-nums text-muted-foreground">{count} tracked</span>
       <div className="h-1.5 w-16 shrink-0 rounded-full bg-secondary overflow-hidden">
         <div
           className="h-full rounded-full bg-navy transition-[width] duration-700 ease-out"

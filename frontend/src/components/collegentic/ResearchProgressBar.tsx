@@ -53,7 +53,7 @@ export function ResearchProgressBar({ progress }: { progress: PipelineProgress }
 
   return (
     <Card>
-      <CardContent className="space-y-2 py-4">
+      <CardContent className="space-y-1.5 py-2.5">
         <div className="flex items-center justify-between text-sm">
           <span className="font-medium">
             {allResearched
