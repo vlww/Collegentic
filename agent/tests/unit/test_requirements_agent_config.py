@@ -101,13 +101,12 @@ def test_washu_color_is_pinned_to_green_not_red() -> None:
 
 
 def test_requirements_pipeline_order() -> None:
-    """branding_and_deadlines_agent must run BEFORE requirements_agent —
-    it's the smaller/faster extraction that lets the Colleges table start
-    filling in color/logo/deadlines while the slower, more detailed
-    requirements_agent call is still in progress, not after."""
+    """branding_and_deadlines_agent is NOT in this pipeline — it now runs
+    in a separate, parallel branch (quick_research_pipeline, see
+    orchestrator_agent.py's per_college_pipeline) so it doesn't have to
+    wait behind requirements_confidence_loop's own real research pass."""
     assert requirements_pipeline.sub_agents == [
         requirements_confidence_loop,
-        branding_and_deadlines_agent,
         requirements_agent,
     ]
 

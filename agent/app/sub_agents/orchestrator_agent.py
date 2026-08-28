@@ -62,8 +62,11 @@ from app.sub_agents.conflict_agent import conflict_pipeline
 from app.sub_agents.essay_matching_agent import essay_matching_pipeline
 from app.sub_agents.priority_agent import priority_pipeline
 from app.sub_agents.readiness_agent import readiness_pipeline
-from app.sub_agents.requirements_agent import requirements_pipeline
-from app.sub_agents.research_agent import college_research_agent
+from app.sub_agents.requirements_agent import (
+    branding_and_deadlines_agent,
+    requirements_pipeline,
+)
+from app.sub_agents.research_agent import college_research_agent, quick_research_agent
 from app.sub_agents.task_planning_agent import task_planning_pipeline
 from app.tools import firestore_tools as ft
 
@@ -80,34 +83,65 @@ cross_college_analysis = ParallelAgent(
 )
 
 
+quick_research_pipeline = SequentialAgent(
+    name="quick_research_pipeline",
+    description="Runs quick_research_agent's own small research call, then "
+    "extracts and persists branding/deadlines from it.",
+    sub_agents=[quick_research_agent, branding_and_deadlines_agent],
+)
+
+detailed_research_pipeline = SequentialAgent(
+    name="detailed_research_pipeline",
+    description="Runs college_research_agent's full research call, then "
+    "structures and persists the detailed Requirement + ResearchSource docs.",
+    sub_agents=[college_research_agent, requirements_pipeline],
+)
+
+# Both branches research the SAME college concurrently — quick_research_
+# pipeline with a small, targeted set of queries (deadlines + branding
+# only), detailed_research_pipeline with a much broader one (every other
+# requirement category). See requirements_agent.py's "Stage 2: quick
+# branding + deadlines pass" comment for why this needs to be genuine
+# concurrency (a ParallelAgent), not just a faster sequential step: the
+# quick branch finishing while the detailed branch is STILL running is
+# exactly what lets the Colleges table reveal color/logo/deadlines without
+# waiting on essay prompts, recommendation rules, etc. Session state
+# writes from each branch land under distinct output_keys/Firestore
+# fields (see requirements_agent.py's branding_and_deadlines_agent vs.
+# requirements_agent — deliberately disjoint), so nothing here reads a
+# value the other branch is mid-write on.
+per_college_pipeline = ParallelAgent(
+    name="per_college_pipeline",
+    sub_agents=[detailed_research_pipeline, quick_research_pipeline],
+)
+
+
 class PerCollegeResearchAndExtraction(BaseAgent):
-    """Runs college_research_agent -> requirements_pipeline once per college
-    in `new_college_names`, one college at a time, instead of researching
-    every newly-requested college in a single batched call.
+    """Runs per_college_pipeline once per college in `new_college_names`,
+    one college at a time, instead of researching every newly-requested
+    college in a single batched call.
 
-    Found live: college_research_agent and requirements_agent each write
-    ALL researched colleges' data to session state in ONE LLM call (their
-    `output_key` replaces the whole value), so with every college batched
-    into that one call, every college's data became known at the exact
-    same instant — no matter how requirements_agent.py's persist stage
-    staggered its OWN Firestore writes afterward (a few hundred ms apart),
-    the entire reveal was compressed into the last few seconds of an
-    otherwise multi-minute run. A student watching the Colleges table saw
-    two long stretches: blank rows, then nothing changing for the whole
-    research duration, then everything landing in one visible burst —
-    not "one college's cell updates the moment it's found."
+    Found live, in two steps. First: college_research_agent and
+    requirements_agent each write ALL researched colleges' data to session
+    state in ONE LLM call (their `output_key` replaces the whole value), so
+    with every college batched into that one call, every college's data
+    became known at the exact same instant — no matter how requirements_
+    agent.py's persist stage staggered its OWN Firestore writes afterward (a
+    few hundred ms apart), the entire reveal was compressed into the last
+    few seconds of an otherwise multi-minute run. Looping per college instead
+    (below) fixed that — each college's row visibly completes at the real
+    moment ITS OWN research finishes, spread naturally across the whole run.
 
-    Looping per college instead means each college's row visibly completes
-    at the real moment ITS OWN research finishes, spread naturally across
-    the whole run — while a later college is still researching, an earlier
-    one's row can already be fully populated. Reuses college_research_agent
-    and requirements_pipeline entirely unchanged (same LLM calls, same
-    Firestore persistence, same before/after_agent_callback Agent Activity
-    logging) — this only changes how many colleges' worth of state each
-    invocation covers, by scoping `new_college_names` down to one name per
-    iteration before delegating to them, the same way LoopAgent (see
-    requirements_agent.py's requirements_confidence_loop) re-invokes the
-    same sub-agent instances multiple times against a shared ctx.
+    Second, within a single college's own research: college_research_agent's
+    single broad research pass (deadlines, testing, recommendations, essay
+    prompts, portfolio, interview, financial aid, ...) had to fully finish
+    before ANY of it — including color/logo/deadlines, which have nothing to
+    do with essay prompts — could be extracted and shown. per_college_
+    pipeline (above) is what fixes that: quick_research_pipeline runs a
+    small, narrowly-scoped research call (just deadlines + branding)
+    genuinely CONCURRENTLY with detailed_research_pipeline's broad one, so
+    color/logo/deadlines land as soon as the much smaller quick pass
+    finishes, not after the whole broad one does.
 
     Every college's row already exists by the time this loop runs —
     college_intake_agent creates them all up front (see its module
@@ -135,7 +169,7 @@ class PerCollegeResearchAndExtraction(BaseAgent):
                 "requested college one at a time, so the Colleges table "
                 "fills in progressively rather than all at once."
             ),
-            sub_agents=[college_research_agent, requirements_pipeline],
+            sub_agents=[per_college_pipeline],
         )
 
     async def _run_async_impl(
@@ -159,23 +193,18 @@ class PerCollegeResearchAndExtraction(BaseAgent):
                 actions=EventActions(
                     state_delta={
                         # Scopes state down to just this one college before
-                        # delegating — college_research_agent's
-                        # `{new_college_names?}` template and
-                        # requirements_agent's extraction both key off this
+                        # delegating — both branches' research agents key
+                        # their `{new_college_names?}` template off this
                         # same list, so a single-item list here is what
-                        # makes each of their output keys
-                        # (raw_research_findings, extracted_requirements) —
-                        # and thus everything requirements_agent.py's
-                        # persist callback writes — cover exactly this one
+                        # makes each of their output keys (raw_research_
+                        # findings, quick_research_findings, and everything
+                        # downstream of them) cover exactly this one
                         # college.
                         "new_college_names": [college_name],
                     }
                 ),
             )
-            async with Aclosing(college_research_agent.run_async(ctx)) as agen:
-                async for event in agen:
-                    yield event
-            async with Aclosing(requirements_pipeline.run_async(ctx)) as agen:
+            async with Aclosing(per_college_pipeline.run_async(ctx)) as agen:
                 async for event in agen:
                     yield event
             try:

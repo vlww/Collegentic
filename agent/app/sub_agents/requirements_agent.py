@@ -636,22 +636,26 @@ requirements_confidence_loop = LoopAgent(
 
 # --- Stage 2: quick branding + deadlines pass --------------------------------
 #
-# Its own small, fast structured-output call — deliberately BEFORE Stage 3's
-# much slower full requirements extraction, not just a persist step run after
-# it. Found live: with a single big extraction call producing branding, logo,
-# deadlines, AND every detailed requirement all at once, everything the
-# Colleges table shows was already fully known in memory well before any of
-# it got written to Firestore — the per-field persistence pacing downstream
-# was real, but it only staggered writes for data that had ALREADY been
-# sitting there the whole time college_research_agent's (much longer) web
-# research was running. A student watching the table saw one long blank
-# "loading" stretch, then everything reveal in a quick burst at the very end.
-# Splitting color/logo/deadlines into their own small extraction (a much
-# smaller schema than the full requirements list, and thus a genuinely faster
-# LLM call) means the table starts filling in as SOON as this call returns —
-# still well before Stage 3's slower, more detailed pass over the same
-# findings has even started — so the reveal tracks real work actually
-# finishing, not just writes to an already-complete dataset.
+# Its own small, fast research-then-extract mini-pipeline (quick_research_
+# agent + branding_and_deadlines_agent below) — run by orchestrator_agent.py's
+# PerCollegeResearchAndExtraction IN PARALLEL with college_research_agent's
+# slower, much broader research (Stage 3 below structures ITS findings).
+#
+# Found live, in two steps: first, with a single big extraction call
+# producing branding, logo, deadlines, AND every detailed requirement all at
+# once, everything the Colleges table shows was already fully known in
+# memory well before any of it got written to Firestore — splitting
+# extraction alone (this agent reading college_research_agent's findings,
+# just faster than the full extraction) fixed THAT, but the split still ran
+# sequentially after the SAME slow, broad research pass, so color/logo/
+# deadlines still couldn't appear until every OTHER category (essay prompts,
+# recommendation rules, testing policy, ...) had also been researched —
+# categories they have nothing to do with. Giving this pass its own
+# narrowly-scoped research call (a handful of targeted queries for just
+# deadlines + branding, not a dozen-plus covering everything) running
+# genuinely concurrently with college_research_agent's broad pass is what
+# actually gets color/logo/deadlines on screen without waiting on unrelated
+# work, rather than just writing an already-fully-known result sooner.
 
 
 class ExtractedDeadline(BaseModel):
@@ -711,11 +715,13 @@ class BrandingAndDeadlinesExtraction(BaseModel):
 
 
 _BRANDING_AND_DEADLINES_INSTRUCTION = f"""You are extracting two specific,
-easy-to-check things from college research findings — a FAST first pass, NOT
-the full requirements list (a separate, slower step handles that afterward).
+easy-to-check things from quick_research_agent's findings below — a FAST
+pass over a small, targeted research call, entirely separate from (and
+running at the same time as) the full requirements extraction over
+college_research_agent's much broader findings.
 
-RAW RESEARCH FINDINGS:
-{{raw_research_findings}}
+QUICK RESEARCH FINDINGS:
+{{quick_research_findings}}
 
 Today's date is {datetime.date.today().isoformat()}.
 
@@ -898,8 +904,10 @@ async def _persist_branding_and_deadlines(callback_context) -> None:
 branding_and_deadlines_agent = LlmAgent(
     model=config.worker_model,
     name="branding_and_deadlines_agent",
-    description="Quickly extracts a college's branding and deadlines from research "
-    "findings, ahead of the slower full requirements extraction.",
+    description="Quickly extracts a college's branding and deadlines from "
+    "quick_research_agent's own small research pass — see "
+    "quick_research_pipeline (orchestrator_agent.py) for how this runs "
+    "alongside, not after, the slower full requirements extraction.",
     instruction=_BRANDING_AND_DEADLINES_INSTRUCTION,
     output_schema=BrandingAndDeadlinesExtraction,
     disallow_transfer_to_parent=True,
@@ -1220,12 +1228,7 @@ requirements_agent = LlmAgent(
 
 requirements_pipeline = SequentialAgent(
     name="requirements_pipeline",
-    description="Refines research findings to a quality bar, quickly extracts branding "
-    "and deadlines, then structures the full findings into Requirement + "
-    "ResearchSource records.",
-    sub_agents=[
-        requirements_confidence_loop,
-        branding_and_deadlines_agent,
-        requirements_agent,
-    ],
+    description="Refines research findings to a quality bar, then structures them into "
+    "Requirement + ResearchSource records.",
+    sub_agents=[requirements_confidence_loop, requirements_agent],
 )

@@ -16,6 +16,7 @@
 Firestore. Live behavior is covered by tests/integration/test_orchestrator_agent.py.
 """
 
+from google.adk.agents import ParallelAgent
 from google.adk.tools.agent_tool import AgentTool
 
 from app.agent import root_agent
@@ -23,6 +24,7 @@ from app.sub_agents.orchestrator_agent import (
     college_intake_pipeline,
     cross_college_analysis,
     orchestrator_agent,
+    per_college_pipeline,
 )
 
 
@@ -70,20 +72,47 @@ def test_intake_pipeline_stage_order() -> None:
 
 
 def test_per_college_stage_researches_then_extracts() -> None:
-    """college_research_agent and requirements_pipeline are wrapped inside
-    per_college_research_and_extraction (see its docstring) so each newly
-    requested college is fully researched and persisted before the next
-    college's research starts, instead of every college being researched in
-    one batched call — this is what makes the Colleges table fill in
-    progressively rather than all at once."""
+    """per_college_pipeline is wrapped inside per_college_research_and_
+    extraction (see its docstring) so each newly requested college is
+    fully researched and persisted before the next college's research
+    starts, instead of every college being researched in one batched
+    call — this is what makes the Colleges table fill in progressively
+    rather than all at once."""
     stage = next(
         agent
         for agent in college_intake_pipeline.sub_agents
         if agent.name == "per_college_research_and_extraction"
     )
-    assert [agent.name for agent in stage.sub_agents] == [
+    assert [agent.name for agent in stage.sub_agents] == ["per_college_pipeline"]
+
+
+def test_per_college_pipeline_runs_quick_and_detailed_research_concurrently() -> None:
+    """detailed_research_pipeline (college_research_agent's broad pass ->
+    requirements_pipeline) and quick_research_pipeline (quick_research_
+    agent's narrow deadlines+branding pass -> branding_and_deadlines_agent)
+    must be genuine PARALLEL branches, not sequential steps — that's what
+    lets color/logo/deadlines land without waiting on the broad pass's
+    unrelated categories (essay prompts, recommendations, ...) to finish
+    first. See requirements_agent.py's "Stage 2" comment for the full
+    reasoning."""
+    assert isinstance(per_college_pipeline, ParallelAgent)
+    branch_names = {agent.name for agent in per_college_pipeline.sub_agents}
+    assert branch_names == {"detailed_research_pipeline", "quick_research_pipeline"}
+
+    detailed = next(
+        a for a in per_college_pipeline.sub_agents if a.name == "detailed_research_pipeline"
+    )
+    assert [a.name for a in detailed.sub_agents] == [
         "college_research_agent",
         "requirements_pipeline",
+    ]
+
+    quick = next(
+        a for a in per_college_pipeline.sub_agents if a.name == "quick_research_pipeline"
+    )
+    assert [a.name for a in quick.sub_agents] == [
+        "quick_research_agent",
+        "branding_and_deadlines_agent",
     ]
 
 
