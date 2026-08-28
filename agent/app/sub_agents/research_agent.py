@@ -78,10 +78,14 @@ FOR EACH COLLEGE, research and report:
 - Financial aid deadlines (e.g. CSS Profile, FAFSA priority date)
 - Any major/program-specific application requirements you find
 
-Note: school brand colors and logo are NOT your job — quick_research_agent
-(below) covers those on its own, faster, narrower pass so the Colleges
-table doesn't have to wait on everything else here first. Don't spend any
-effort on them.
+Note: school brand colors and logo are NOT your job — branding_research_
+agent (below) covers those on its own, much faster, narrower pass so the
+Colleges table doesn't have to wait on everything else here first. Don't
+spend any effort on them. (Deadlines above ARE still your job too, even
+though deadlines_research_agent also researches them separately and faster
+for the table's own summary field — your slower, broader pass is what
+turns each deadline into its own trackable Requirement/Task, which needs
+the fuller context only this pass gathers.)
 
 CRITICAL — never invent information:
 - If a requirement is not clearly stated, is contradicted across sources,
@@ -128,13 +132,65 @@ college_research_agent = LlmAgent(
 )
 
 
-_QUICK_RESEARCH_INSTRUCTION = f"""You are doing a FAST, narrowly-scoped research
-pass for Collegentic — NOT the full research pass (college_research_agent
-covers every other requirement category separately, at the same time).
-Research ONLY the two things below, with a small number of sharp, targeted
-queries rather than an exhaustive sweep — speed matters here specifically
-so the Colleges table can show a college's color/logo/deadlines without
-waiting on its essay prompts, recommendation rules, testing policy, etc.
+_BRANDING_RESEARCH_INSTRUCTION = f"""You are doing a VERY FAST, single-purpose
+research pass for Collegentic — find ONLY a college's official brand color(s)
+and logo, nothing else. This is deliberately the very first thing found for
+a newly requested college (a student sees its row tinted with the real
+school color before anything else lands), so speed matters more here than
+anywhere else in the pipeline: one or two sharp, targeted queries, not a
+sweep.
+
+WHICH COLLEGES TO RESEARCH:
+NEW_COLLEGES (from pipeline state, may be empty): {{new_college_names?}}
+If NEW_COLLEGES lists one or more names, research exactly those and only
+those. If it is empty, parse the list of college names directly from the
+user's message instead. If there is nothing to research either way, say so
+and stop — do not invent colleges to research.
+
+FOR EACH COLLEGE, research and report ONLY:
+- School brand colors: the official primary (and secondary, if stated) color
+  as a hex code — search e.g. "site:brand.<college>.edu color" or "<college>
+  official brand color hex".
+- Official logo: a downstream deterministic step (not you) already looks up
+  each school's logo, so don't spend effort on this unless you happen to
+  notice one while searching for the above — as an absolute last resort,
+  search "site:commons.wikimedia.org <college> seal" and report ONLY the
+  exact Wikimedia Commons file name of the school's official seal (the part
+  after "File:" in the page title), never a constructed URL.
+
+Do NOT research deadlines, essays, recommendations, testing policy,
+portfolio, interview, or major-specific requirements here — separate passes
+cover those.
+
+CRITICAL — never invent information: if a color is not clearly stated, or
+you cannot find it after searching, do NOT guess — just omit it.
+
+OUTPUT FORMAT — one level-2 markdown header per college (`## <College Name>`,
+spelled exactly as given) followed by a bulleted list of whatever branding
+you found under that header. This exact structure is required — a
+downstream agent splits your output by these headers.
+"""
+
+
+branding_research_agent = LlmAgent(
+    model=config.worker_model,
+    name="branding_research_agent",
+    description=(
+        "The FIRST thing researched for a newly requested college — its brand "
+        "color(s) and logo hint, and nothing else, so the Colleges table shows "
+        "real color/logo before anything else lands."
+    ),
+    instruction=_BRANDING_RESEARCH_INSTRUCTION,
+    tools=[google_search],
+    output_key="branding_research_findings",
+    before_agent_callback=log_agent_run_start,
+    after_agent_callback=log_agent_run_complete,
+)
+
+
+_DEADLINES_RESEARCH_INSTRUCTION = f"""You are doing a FAST, single-purpose
+research pass for Collegentic — find ONLY a college's application deadlines,
+nothing else. A small number of sharp, targeted queries, not a sweep.
 
 WHICH COLLEGES TO RESEARCH:
 NEW_COLLEGES (from pipeline state, may be empty): {{new_college_names?}}
@@ -148,29 +204,19 @@ FOR EACH COLLEGE, research and report ONLY:
   the financial aid priority date (CSS Profile/FAFSA), with exact dates.
   Prefer queries that target the college's own domain, e.g.
   "site:admissions.<college>.edu application deadlines".
-- School brand colors: the official primary (and secondary, if stated) color
-  as a hex code, from the school's brand/identity guidelines page if you can
-  find one (search e.g. "site:brand.<college>.edu color" or "<college>
-  official brand color hex").
-- Official logo: a downstream deterministic step (not you) already looks up
-  each school's logo, so don't spend effort on this unless you happen to
-  notice one while searching for the above — as an absolute last resort,
-  search "site:commons.wikimedia.org <college> seal" and report ONLY the
-  exact Wikimedia Commons file name of the school's official seal (the part
-  after "File:" in the page title), never a constructed URL.
 
-Do NOT research essays, recommendations, testing policy, portfolio,
-interview, or major-specific requirements here — college_research_agent's
-separate, slower pass covers those.
+Do NOT research brand colors, logo, essays, recommendations, testing
+policy, portfolio, interview, or major-specific requirements here —
+separate passes cover those.
 
-CRITICAL — never invent information: if a deadline or color is not clearly
-stated, or you cannot find it after searching, do NOT guess. Write
+CRITICAL — never invent information: if a deadline is not clearly stated,
+or you cannot find it after searching, do NOT guess. Write
 "UNCERTAIN: <what's missing>" for that item instead.
 
 OUTPUT FORMAT — one level-2 markdown header per college (`## <College Name>`,
-spelled exactly as given) followed by a bulleted list of deadlines and
-branding under that header. This exact structure is required — a downstream
-agent splits your output by these headers.
+spelled exactly as given) followed by a bulleted list of deadlines under
+that header. This exact structure is required — a downstream agent splits
+your output by these headers.
 
 Today's date is {datetime.date.today().isoformat()} — use it to judge
 whether a deadline you find is for the current application cycle or a past
@@ -178,17 +224,16 @@ one, and prefer the most recent cycle's information.
 """
 
 
-quick_research_agent = LlmAgent(
+deadlines_research_agent = LlmAgent(
     model=config.worker_model,
-    name="quick_research_agent",
+    name="deadlines_research_agent",
     description=(
-        "Fast, narrowly-scoped research for a college's deadlines and brand "
-        "colors only — run in parallel with college_research_agent's slower, "
-        "full pass so the Colleges table doesn't wait on unrelated categories."
+        "Researches a college's application deadlines only, right after "
+        "branding_research_agent — its own fast, single-purpose pass."
     ),
-    instruction=_QUICK_RESEARCH_INSTRUCTION,
+    instruction=_DEADLINES_RESEARCH_INSTRUCTION,
     tools=[google_search],
-    output_key="quick_research_findings",
+    output_key="deadlines_research_findings",
     before_agent_callback=log_agent_run_start,
     after_agent_callback=log_agent_run_complete,
 )

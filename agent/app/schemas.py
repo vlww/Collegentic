@@ -235,8 +235,8 @@ class College(FirestoreModel):
     # "requirements", or null (before research starts, or once it's fully
     # done). Drives exactly where CollegeTable.tsx shows its ONE loading
     # spinner at a time — "logo" first (color is applied silently during
-    # this same window, since branding_and_deadlines_agent already has it
-    # the instant its own small/fast extraction call completes, with no
+    # this same window, since branding_extraction_agent already has it the
+    # instant its own small/fast extraction call completes, with no
     # separate lookup of its own to wait on), then each deadline kind in
     # order, then "requirements" last — which sits on requirements_agent's
     # own, much slower, LLM call for as long as that takes, with no further

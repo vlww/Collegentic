@@ -63,10 +63,15 @@ from app.sub_agents.essay_matching_agent import essay_matching_pipeline
 from app.sub_agents.priority_agent import priority_pipeline
 from app.sub_agents.readiness_agent import readiness_pipeline
 from app.sub_agents.requirements_agent import (
-    branding_and_deadlines_agent,
+    branding_extraction_agent,
+    deadlines_extraction_agent,
     requirements_pipeline,
 )
-from app.sub_agents.research_agent import college_research_agent, quick_research_agent
+from app.sub_agents.research_agent import (
+    branding_research_agent,
+    college_research_agent,
+    deadlines_research_agent,
+)
 from app.sub_agents.task_planning_agent import task_planning_pipeline
 from app.tools import firestore_tools as ft
 
@@ -85,9 +90,16 @@ cross_college_analysis = ParallelAgent(
 
 quick_research_pipeline = SequentialAgent(
     name="quick_research_pipeline",
-    description="Runs quick_research_agent's own small research call, then "
-    "extracts and persists branding/deadlines from it.",
-    sub_agents=[quick_research_agent, branding_and_deadlines_agent],
+    description="Researches and persists a college's branding first (the "
+    "smallest, fastest possible call), then its deadlines — two separate "
+    "research-then-extract steps, not one bundled call, so color/logo can "
+    "land without waiting on deadline queries too.",
+    sub_agents=[
+        branding_research_agent,
+        branding_extraction_agent,
+        deadlines_research_agent,
+        deadlines_extraction_agent,
+    ],
 )
 
 detailed_research_pipeline = SequentialAgent(
@@ -98,18 +110,18 @@ detailed_research_pipeline = SequentialAgent(
 )
 
 # Both branches research the SAME college concurrently — quick_research_
-# pipeline with a small, targeted set of queries (deadlines + branding
-# only), detailed_research_pipeline with a much broader one (every other
-# requirement category). See requirements_agent.py's "Stage 2: quick
-# branding + deadlines pass" comment for why this needs to be genuine
-# concurrency (a ParallelAgent), not just a faster sequential step: the
-# quick branch finishing while the detailed branch is STILL running is
-# exactly what lets the Colleges table reveal color/logo/deadlines without
-# waiting on essay prompts, recommendation rules, etc. Session state
-# writes from each branch land under distinct output_keys/Firestore
-# fields (see requirements_agent.py's branding_and_deadlines_agent vs.
-# requirements_agent — deliberately disjoint), so nothing here reads a
-# value the other branch is mid-write on.
+# pipeline with two small, targeted research calls (branding, then
+# deadlines), detailed_research_pipeline with one much broader one (every
+# other requirement category). See requirements_agent.py's "Stage 2: quick
+# branding pass, then quick deadlines pass" comment for why this needs to
+# be genuine concurrency (a ParallelAgent), not just a faster sequential
+# step: the quick branch finishing while the detailed branch is STILL
+# running is exactly what lets the Colleges table reveal color/logo/
+# deadlines without waiting on essay prompts, recommendation rules, etc.
+# Session state writes from each branch land under distinct output_keys/
+# Firestore fields (see requirements_agent.py's branding_extraction_agent/
+# deadlines_extraction_agent vs. requirements_agent — deliberately
+# disjoint), so nothing here reads a value the other branch is mid-write on.
 per_college_pipeline = ParallelAgent(
     name="per_college_pipeline",
     sub_agents=[detailed_research_pipeline, quick_research_pipeline],
@@ -137,11 +149,13 @@ class PerCollegeResearchAndExtraction(BaseAgent):
     prompts, portfolio, interview, financial aid, ...) had to fully finish
     before ANY of it — including color/logo/deadlines, which have nothing to
     do with essay prompts — could be extracted and shown. per_college_
-    pipeline (above) is what fixes that: quick_research_pipeline runs a
-    small, narrowly-scoped research call (just deadlines + branding)
-    genuinely CONCURRENTLY with detailed_research_pipeline's broad one, so
-    color/logo/deadlines land as soon as the much smaller quick pass
-    finishes, not after the whole broad one does.
+    pipeline (above) is what fixes that: quick_research_pipeline runs its
+    own small, narrowly-scoped research calls genuinely CONCURRENTLY with
+    detailed_research_pipeline's broad one, so color/logo/deadlines land as
+    soon as those much smaller calls finish, not after the whole broad one
+    does — and branding (color/logo) is researched and extracted in its OWN
+    first step, before deadlines' own step even starts, so it doesn't wait
+    on deadline queries either.
 
     Every college's row already exists by the time this loop runs —
     college_intake_agent creates them all up front (see its module
@@ -193,13 +207,14 @@ class PerCollegeResearchAndExtraction(BaseAgent):
                 actions=EventActions(
                     state_delta={
                         # Scopes state down to just this one college before
-                        # delegating — both branches' research agents key
-                        # their `{new_college_names?}` template off this
-                        # same list, so a single-item list here is what
-                        # makes each of their output keys (raw_research_
-                        # findings, quick_research_findings, and everything
-                        # downstream of them) cover exactly this one
-                        # college.
+                        # delegating — every research agent in both
+                        # branches keys its `{new_college_names?}` template
+                        # off this same list, so a single-item list here is
+                        # what makes each of their output keys
+                        # (raw_research_findings, branding_research_
+                        # findings, deadlines_research_findings, and
+                        # everything downstream of them) cover exactly this
+                        # one college.
                         "new_college_names": [college_name],
                     }
                 ),

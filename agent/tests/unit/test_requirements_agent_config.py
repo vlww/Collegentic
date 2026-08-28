@@ -22,7 +22,8 @@ from app.sub_agents.requirements_agent import (
     _is_official_source,
     _known_college_key,
     _match_logobrands_entry,
-    branding_and_deadlines_agent,
+    branding_extraction_agent,
+    deadlines_extraction_agent,
     requirements_agent,
     requirements_confidence_loop,
     requirements_pipeline,
@@ -101,22 +102,27 @@ def test_washu_color_is_pinned_to_green_not_red() -> None:
 
 
 def test_requirements_pipeline_order() -> None:
-    """branding_and_deadlines_agent is NOT in this pipeline — it now runs
-    in a separate, parallel branch (quick_research_pipeline, see
-    orchestrator_agent.py's per_college_pipeline) so it doesn't have to
-    wait behind requirements_confidence_loop's own real research pass."""
+    """branding_extraction_agent/deadlines_extraction_agent are NOT in this
+    pipeline — they now run in a separate, parallel branch (quick_research_
+    pipeline, see orchestrator_agent.py's per_college_pipeline) so they
+    don't have to wait behind requirements_confidence_loop's own real
+    research pass."""
     assert requirements_pipeline.sub_agents == [
         requirements_confidence_loop,
         requirements_agent,
     ]
 
 
-def test_branding_and_deadlines_agent_has_no_tools() -> None:
-    """Same reasoning as requirements_agent: it only structures findings
-    already gathered by the Research Agent, never searches on its own."""
-    assert branding_and_deadlines_agent.tools == []
+def test_branding_and_deadlines_extraction_agents_have_no_tools() -> None:
+    """Same reasoning as requirements_agent: they only structure findings
+    already gathered by their own research agent, never search on their
+    own."""
+    assert branding_extraction_agent.tools == []
+    assert deadlines_extraction_agent.tools == []
 
 
-def test_branding_and_deadlines_agent_output_schema_wired() -> None:
-    assert branding_and_deadlines_agent.output_key == "branding_and_deadlines"
-    assert branding_and_deadlines_agent.output_schema is not None
+def test_branding_and_deadlines_extraction_agents_output_schema_wired() -> None:
+    assert branding_extraction_agent.output_key == "branding_extraction"
+    assert branding_extraction_agent.output_schema is not None
+    assert deadlines_extraction_agent.output_key == "deadlines_extraction"
+    assert deadlines_extraction_agent.output_schema is not None

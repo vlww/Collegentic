@@ -88,13 +88,13 @@ def test_per_college_stage_researches_then_extracts() -> None:
 
 def test_per_college_pipeline_runs_quick_and_detailed_research_concurrently() -> None:
     """detailed_research_pipeline (college_research_agent's broad pass ->
-    requirements_pipeline) and quick_research_pipeline (quick_research_
-    agent's narrow deadlines+branding pass -> branding_and_deadlines_agent)
-    must be genuine PARALLEL branches, not sequential steps — that's what
-    lets color/logo/deadlines land without waiting on the broad pass's
-    unrelated categories (essay prompts, recommendations, ...) to finish
-    first. See requirements_agent.py's "Stage 2" comment for the full
-    reasoning."""
+    requirements_pipeline) and quick_research_pipeline (branding_research_
+    agent -> branding_extraction_agent -> deadlines_research_agent ->
+    deadlines_extraction_agent) must be genuine PARALLEL branches, not
+    sequential steps — that's what lets color/logo/deadlines land without
+    waiting on the broad pass's unrelated categories (essay prompts,
+    recommendations, ...) to finish first. See requirements_agent.py's
+    "Stage 2" comment for the full reasoning."""
     assert isinstance(per_college_pipeline, ParallelAgent)
     branch_names = {agent.name for agent in per_college_pipeline.sub_agents}
     assert branch_names == {"detailed_research_pipeline", "quick_research_pipeline"}
@@ -110,9 +110,14 @@ def test_per_college_pipeline_runs_quick_and_detailed_research_concurrently() ->
     quick = next(
         a for a in per_college_pipeline.sub_agents if a.name == "quick_research_pipeline"
     )
+    # Branding (research then extract) must come entirely BEFORE deadlines
+    # (research then extract) — not interleaved or bundled — so color/logo
+    # can land without waiting on deadline queries too.
     assert [a.name for a in quick.sub_agents] == [
-        "quick_research_agent",
-        "branding_and_deadlines_agent",
+        "branding_research_agent",
+        "branding_extraction_agent",
+        "deadlines_research_agent",
+        "deadlines_extraction_agent",
     ]
 
 

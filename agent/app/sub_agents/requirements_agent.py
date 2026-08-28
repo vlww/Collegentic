@@ -634,46 +634,30 @@ requirements_confidence_loop = LoopAgent(
 )
 
 
-# --- Stage 2: quick branding + deadlines pass --------------------------------
+# --- Stage 2: quick branding pass, then quick deadlines pass -----------------
 #
-# Its own small, fast research-then-extract mini-pipeline (quick_research_
-# agent + branding_and_deadlines_agent below) — run by orchestrator_agent.py's
-# PerCollegeResearchAndExtraction IN PARALLEL with college_research_agent's
-# slower, much broader research (Stage 3 below structures ITS findings).
+# TWO small, fast research-then-extract steps (branding_research_agent ->
+# branding_extraction_agent, then deadlines_research_agent ->
+# deadlines_extraction_agent below), run in sequence by orchestrator_agent.py's
+# quick_research_pipeline — itself running IN PARALLEL with college_research_
+# agent's slower, much broader research (Stage 3 below structures ITS
+# findings).
 #
-# Found live, in two steps: first, with a single big extraction call
+# Found live, in three steps. First: with a single big extraction call
 # producing branding, logo, deadlines, AND every detailed requirement all at
 # once, everything the Colleges table shows was already fully known in
-# memory well before any of it got written to Firestore — splitting
-# extraction alone (this agent reading college_research_agent's findings,
-# just faster than the full extraction) fixed THAT, but the split still ran
-# sequentially after the SAME slow, broad research pass, so color/logo/
-# deadlines still couldn't appear until every OTHER category (essay prompts,
-# recommendation rules, testing policy, ...) had also been researched —
-# categories they have nothing to do with. Giving this pass its own
-# narrowly-scoped research call (a handful of targeted queries for just
-# deadlines + branding, not a dozen-plus covering everything) running
-# genuinely concurrently with college_research_agent's broad pass is what
-# actually gets color/logo/deadlines on screen without waiting on unrelated
-# work, rather than just writing an already-fully-known result sooner.
-
-
-class ExtractedDeadline(BaseModel):
-    college_name: str = Field(
-        description="Must exactly match a college name/header from the findings."
-    )
-    kind: Literal["EA", "ED", "RD", "financial_aid"] = Field(
-        description="Which deadline this is — Early Action, Early Decision, Regular "
-        "Decision, or a financial aid deadline (CSS Profile/FAFSA priority date)."
-    )
-    deadline_iso: str = Field(
-        description="ISO 8601 date (YYYY-MM-DD). College deadline pages very often "
-        "state a deadline as a bare month/day ('November 1') with no year, "
-        "implicitly meaning the current or upcoming application cycle — INFER the "
-        "correct year from today's date (this cycle's year if that month/day "
-        "hasn't passed yet, otherwise next year's) and fill in the full date; this "
-        "is resolving an obvious implicit detail, not inventing a fact."
-    )
+# memory well before any of it got written to Firestore. Second: splitting
+# extraction into its own smaller/faster call fixed that, but it still ran
+# sequentially after the SAME slow, broad research pass. Giving it its own
+# research call, run genuinely concurrently with college_research_agent's
+# broad pass, fixed THAT — but bundling deadlines + branding into that one
+# quick call still meant color and logo (the very first, cheapest things to
+# find) had to wait on deadlines-query formulation and results too. This
+# split is the third fix: branding_research_agent's pass covers ONLY color
+# + logo, nothing else, so it's the smallest, fastest possible first call —
+# color/logo can land, and the row can visibly tint, before deadlines
+# research has even started. deadlines_research_agent's own pass starts only
+# once branding_extraction_agent's persist step finishes.
 
 
 _HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -700,60 +684,47 @@ class ExtractedBranding(BaseModel):
     )
 
 
-class BrandingAndDeadlinesExtraction(BaseModel):
+class BrandingExtraction(BaseModel):
     branding: list[ExtractedBranding] = Field(
         default_factory=list,
         description="One entry per college whose findings mentioned a brand "
         "color or logo filename. Omit a college entirely rather than guessing.",
     )
-    deadlines: list[ExtractedDeadline] = Field(
-        default_factory=list,
-        description="One entry per application deadline the findings state. Skip "
-        "a deadline you can't confidently classify into one of the four kinds, or "
-        "whose date is missing/unclear — do not guess.",
-    )
 
 
-_BRANDING_AND_DEADLINES_INSTRUCTION = f"""You are extracting two specific,
-easy-to-check things from quick_research_agent's findings below — a FAST
-pass over a small, targeted research call, entirely separate from (and
-running at the same time as) the full requirements extraction over
-college_research_agent's much broader findings.
+_BRANDING_EXTRACTION_INSTRUCTION = f"""You are extracting ONE specific,
+easy-to-check thing from branding_research_agent's own small, targeted
+research pass below — a college's brand color(s) and, if found, a Wikimedia
+Commons logo filename. Nothing else.
 
-QUICK RESEARCH FINDINGS:
-{{quick_research_findings}}
+BRANDING RESEARCH FINDINGS:
+{{branding_research_findings}}
 
 Today's date is {datetime.date.today().isoformat()}.
 
-1. BRANDING: for each college whose findings state a brand color (hex) or a
-   Wikimedia Commons logo filename, add one entry to `branding`. Copy the hex
-   code and filename exactly as given — never normalize, guess, or invent one
-   that wasn't explicitly in the findings. Skip a college entirely (don't add
-   an all-null entry) if the findings say nothing about its colors or logo.
+For each college whose findings state a brand color (hex) or a Wikimedia
+Commons logo filename, add one entry to `branding`. Copy the hex code and
+filename exactly as given — never normalize, guess, or invent one that
+wasn't explicitly in the findings. Skip a college entirely (don't add an
+all-null entry) if the findings say nothing about its colors or logo.
 
-2. DEADLINES: for each application deadline the findings state, add one entry
-   to `deadlines` with its college_name, kind, and ISO date.
-
-Never invent a color, logo, or date that wasn't in the findings.
-
-Respond with a single raw JSON object matching the BrandingAndDeadlinesExtraction schema."""
+Respond with a single raw JSON object matching the BrandingExtraction schema."""
 
 
-async def _persist_branding_and_deadlines(callback_context) -> None:
-    """Writes College.schoolColors/logoUrl/deadlines as soon as THIS small,
-    fast extraction call finishes — see the module comment above this
-    agent's schemas for why it's split out from Stage 3's slower full
-    extraction rather than being derived from it after the fact.
+async def _persist_branding(callback_context) -> None:
+    """Writes College.schoolColors/logoUrl as soon as THIS very small, fast
+    extraction call finishes, then hands off to deadlines_research_agent —
+    see the module comment above this agent's schemas for why branding is
+    split into its own even-faster first step.
 
-    Same shape as _persist_requirements_and_sources below (async,
-    `await asyncio.sleep(...)` rather than `time.sleep(...)`, the logo's
-    real network lookup run via `asyncio.to_thread`) and for the identical
-    reason: this whole backend is one uvicorn process on a single asyncio
-    event loop, so a blocking call here would freeze every other in-flight
+    async, `await asyncio.to_thread(...)` for the logo's real network
+    lookup — same reasoning as every other persist callback in this file:
+    this whole backend is one uvicorn process on a single asyncio event
+    loop, so a blocking call here would freeze every other in-flight
     request, not just this one.
     """
     user_id = callback_context.user_id
-    extraction = callback_context.state.get("branding_and_deadlines") or {}
+    extraction = callback_context.state.get("branding_extraction") or {}
     name_to_id: dict[str, str] = callback_context.state.get("college_name_to_id", {})
     new_college_names: list[str] = callback_context.state.get("new_college_names", [])
 
@@ -830,6 +801,8 @@ async def _persist_branding_and_deadlines(callback_context) -> None:
     # Advance the spinner to the first deadline field regardless of whether
     # a logo was actually found — "found, or determined there isn't one" is
     # still a resolved state for that cell, not a reason to keep spinning.
+    # deadlines_research_agent (next in quick_research_pipeline) starts
+    # right after this callback returns.
     try:
         ft.advance_research_stage(user_id, college_id, "ea")
     except Exception:
@@ -837,6 +810,93 @@ async def _persist_branding_and_deadlines(callback_context) -> None:
             "Failed to advance research stage past logo for %r", college_name,
             exc_info=True,
         )
+
+    log_agent_run_complete(
+        callback_context,
+        f"Found branding for {college_name}." if color_fields or logo_url
+        else f"No branding found for {college_name}.",
+    )
+
+
+branding_extraction_agent = LlmAgent(
+    model=config.worker_model,
+    name="branding_extraction_agent",
+    description="Quickly extracts a college's brand color(s)/logo hint from "
+    "branding_research_agent's own small research pass — the very first "
+    "thing revealed on the Colleges table for a newly requested college.",
+    instruction=_BRANDING_EXTRACTION_INSTRUCTION,
+    output_schema=BrandingExtraction,
+    disallow_transfer_to_parent=True,
+    disallow_transfer_to_peers=True,
+    output_key="branding_extraction",
+    before_agent_callback=log_agent_run_start,
+    after_agent_callback=_persist_branding,
+)
+
+
+class ExtractedDeadline(BaseModel):
+    college_name: str = Field(
+        description="Must exactly match a college name/header from the findings."
+    )
+    kind: Literal["EA", "ED", "RD", "financial_aid"] = Field(
+        description="Which deadline this is — Early Action, Early Decision, Regular "
+        "Decision, or a financial aid deadline (CSS Profile/FAFSA priority date)."
+    )
+    deadline_iso: str = Field(
+        description="ISO 8601 date (YYYY-MM-DD). College deadline pages very often "
+        "state a deadline as a bare month/day ('November 1') with no year, "
+        "implicitly meaning the current or upcoming application cycle — INFER the "
+        "correct year from today's date (this cycle's year if that month/day "
+        "hasn't passed yet, otherwise next year's) and fill in the full date; this "
+        "is resolving an obvious implicit detail, not inventing a fact."
+    )
+
+
+class DeadlinesExtraction(BaseModel):
+    deadlines: list[ExtractedDeadline] = Field(
+        default_factory=list,
+        description="One entry per application deadline the findings state. Skip "
+        "a deadline you can't confidently classify into one of the four kinds, or "
+        "whose date is missing/unclear — do not guess.",
+    )
+
+
+_DEADLINES_EXTRACTION_INSTRUCTION = f"""You are extracting ONE specific,
+easy-to-check thing from deadlines_research_agent's own small, targeted
+research pass below — a college's application deadlines. Nothing else.
+
+DEADLINES RESEARCH FINDINGS:
+{{deadlines_research_findings}}
+
+Today's date is {datetime.date.today().isoformat()}.
+
+For each application deadline the findings state, add one entry to
+`deadlines` with its college_name, kind, and ISO date.
+
+Respond with a single raw JSON object matching the DeadlinesExtraction schema."""
+
+
+async def _persist_deadlines(callback_context) -> None:
+    """Writes College.deadlines one field at a time — see the module
+    comment above this agent's schemas for why this runs as its own step,
+    after branding_extraction_agent rather than alongside it.
+
+    async, `await asyncio.sleep(...)` rather than `time.sleep(...)` for the
+    pacing pause below — same reasoning as every other persist callback in
+    this file: this whole backend is one uvicorn process on a single
+    asyncio event loop, so a blocking call here would freeze every other
+    in-flight request, not just this one.
+    """
+    user_id = callback_context.user_id
+    extraction = callback_context.state.get("deadlines_extraction") or {}
+    name_to_id: dict[str, str] = callback_context.state.get("college_name_to_id", {})
+    new_college_names: list[str] = callback_context.state.get("new_college_names", [])
+
+    college_name = new_college_names[0] if new_college_names else None
+    college_id = name_to_id.get(college_name) if college_name else None
+    if not college_id:
+        log_agent_run_complete(callback_context, "No college to research.")
+        return
 
     # --- Deadlines, ONE FIELD AT A TIME — EA, then ED, then RD, then
     # financial aid. The loading spinner (research_stage) sits on exactly
@@ -878,15 +938,11 @@ async def _persist_branding_and_deadlines(callback_context) -> None:
                     "Failed to save %s deadline for college %r, continuing",
                     field, college_id, exc_info=True,
                 )
-        # Deliberate pause before revealing this field resolved. Longer
-        # than a bare "long enough for the frontend's poll to catch it"
-        # (0.6s) — found live: right after color+logo land, four of these
-        # back to back read as one bunched-up burst rather than four
-        # distinct discoveries, even though each write really was separate.
-        # 1.5s is short enough to barely register against the multi-minute
-        # research run as a whole, but long enough for each deadline to
-        # read as its own beat.
-        await asyncio.sleep(1.5)
+        # Deliberate pause before revealing this field resolved — long
+        # enough for each deadline to read as its own discovery rather than
+        # four back-to-back writes blurring into one burst, short enough
+        # not to meaningfully add to the overall research time.
+        await asyncio.sleep(1.0)
         try:
             ft.advance_research_stage(user_id, college_id, _NEXT_STAGE_AFTER_DEADLINE[field])
         except Exception:
@@ -897,24 +953,23 @@ async def _persist_branding_and_deadlines(callback_context) -> None:
 
     log_agent_run_complete(
         callback_context,
-        f"Found branding and {len(deadlines_by_field)} deadline(s) for {college_name}.",
+        f"Found {len(deadlines_by_field)} deadline(s) for {college_name}.",
     )
 
 
-branding_and_deadlines_agent = LlmAgent(
+deadlines_extraction_agent = LlmAgent(
     model=config.worker_model,
-    name="branding_and_deadlines_agent",
-    description="Quickly extracts a college's branding and deadlines from "
-    "quick_research_agent's own small research pass — see "
-    "quick_research_pipeline (orchestrator_agent.py) for how this runs "
-    "alongside, not after, the slower full requirements extraction.",
-    instruction=_BRANDING_AND_DEADLINES_INSTRUCTION,
-    output_schema=BrandingAndDeadlinesExtraction,
+    name="deadlines_extraction_agent",
+    description="Quickly extracts a college's deadlines from "
+    "deadlines_research_agent's own small research pass, right after "
+    "branding_extraction_agent persists color/logo.",
+    instruction=_DEADLINES_EXTRACTION_INSTRUCTION,
+    output_schema=DeadlinesExtraction,
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
-    output_key="branding_and_deadlines",
+    output_key="deadlines_extraction",
     before_agent_callback=log_agent_run_start,
-    after_agent_callback=_persist_branding_and_deadlines,
+    after_agent_callback=_persist_deadlines,
 )
 
 
@@ -938,7 +993,7 @@ class ExtractedRequirement(BaseModel):
     )
     required: bool = True
     # No deadline_kind (EA/ED/RD/financial_aid) here — that classification
-    # now happens up front in branding_and_deadlines_agent, which owns
+    # now happens up front in deadlines_extraction_agent, which owns
     # College.deadlines exclusively (see that agent's module comment). This
     # deadline_iso is still per-requirement (e.g. an essay's own due date),
     # independent of that summary field.
@@ -1035,12 +1090,13 @@ async def _persist_requirements_and_sources(callback_context) -> None:
     citation_replacement_callback in deep-search.
 
     College.schoolColors/logoUrl/deadlines are NOT written here — see
-    branding_and_deadlines_agent above, which runs (and persists them)
-    BEFORE this slower, more detailed extraction even starts, so a student
-    watching the Colleges table sees those land while this agent's own
-    (larger, thus slower) LLM call is still in progress, rather than
-    everything having been sitting fully known in memory the whole time and
-    only getting revealed once this finishes.
+    branding_extraction_agent/deadlines_extraction_agent above, which run
+    (and persist them) in a separate branch CONCURRENTLY with this slower,
+    more detailed extraction (see orchestrator_agent.py's per_college_
+    pipeline), so a student watching the Colleges table sees those land
+    while this agent's own (larger, thus slower) LLM call is still in
+    progress, rather than everything having been sitting fully known in
+    memory the whole time and only getting revealed once this finishes.
 
     async, not a plain def, and the pacing pause below is `await
     asyncio.sleep(...)` rather than `time.sleep(...)` — found live: ADK's
@@ -1182,7 +1238,7 @@ async def _persist_requirements_and_sources(callback_context) -> None:
     # chunks) only ever faked a "still finding things" progress bar for
     # data that had already fully arrived — the real "still working" wait
     # is the LLM call itself, which research_stage == "requirements" (set
-    # the moment branding_and_deadlines_agent finishes, above) already
+    # the moment deadlines_extraction_agent finishes, above) already
     # covers: CollegeTable.tsx shows its own client-side simulated progress
     # for that whole stretch, then swaps to this real, final count the
     # instant it lands. -----------------------------------------------
