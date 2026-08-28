@@ -49,7 +49,7 @@ export function Dashboard() {
         description="All of your applications, at a glance."
       />
 
-      <div className="mb-6 space-y-6">
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
         <TodaysPriorities />
         {colleges !== null && colleges.length > 0 && (
           <ConflictAlerts collegeName={(id) => collegeNameById[id] ?? id} />

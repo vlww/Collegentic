@@ -3,7 +3,6 @@ import { Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
-import { MarkdownLite } from "@/components/MarkdownLite";
 import { sendOrchestratorMessage } from "@/lib/api";
 
 interface AddCollegeFormProps {
@@ -27,7 +26,6 @@ interface AddCollegeFormProps {
 export function AddCollegeForm({ onDone, onLoadingChange }: AddCollegeFormProps) {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [reply, setReply] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -36,10 +34,12 @@ export function AddCollegeForm({ onDone, onLoadingChange }: AddCollegeFormProps)
     setLoading(true);
     onLoadingChange?.(true);
     setError(null);
-    setReply(null);
     try {
-      const result = await sendOrchestratorMessage(message.trim());
-      setReply(result.reply);
+      // The Orchestrator's own plain-language reply isn't shown — Colleges.tsx
+      // instead shows a plain "Research completed" once the table settles
+      // (see ResearchProgressBar's replacement), which reads faster than a
+      // paragraph a judge has to stop and read.
+      await sendOrchestratorMessage(message.trim());
       setMessage("");
       await onDone();
     } catch (err) {
@@ -89,11 +89,6 @@ export function AddCollegeForm({ onDone, onLoadingChange }: AddCollegeFormProps)
           </div>
         </form>
         {error && <p className="text-sm text-destructive">{error}</p>}
-        {reply && (
-          <div className="rounded-md border border-border bg-muted/50 p-3 text-sm whitespace-pre-wrap">
-            <MarkdownLite text={reply} />
-          </div>
-        )}
       </CardContent>
     </Card>
   );

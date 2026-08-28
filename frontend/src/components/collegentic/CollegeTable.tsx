@@ -11,16 +11,24 @@ import type { College, Readiness, Requirement } from "@/lib/types";
 interface CollegeTableProps {
   colleges: College[];
   requirementsByCollege: Record<string, Requirement[]>;
-  /** True while a research pipeline is actively running (Colleges.tsx's
-   * poll-while-in-flight state) — lets an unresearched row read as "still
-   * working on it" rather than indistinguishable from a college nobody's
-   * researched at all. */
-  researching?: boolean;
   /** Deletes a college and everything derived from researching it (see
    * api.ts's deleteCollege) and refetches — the row disappears on its own
    * once `colleges` no longer includes it. This component only owns the
    * confirm-before-delete step. */
   onDelete: (collegeId: string) => Promise<void>;
+}
+
+/** A cell whose value the agent is actively still looking for (see
+ * College.researching) — a spinner instead of a plain "-", since an empty
+ * cell on a row currently being researched isn't confirmed absent, just
+ * not found yet. */
+function LoadingCell() {
+  return (
+    <Loader2
+      className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+      aria-label="Searching…"
+    />
+  );
 }
 
 /**
@@ -100,8 +108,12 @@ function readinessTone(score: number): Tone {
   return "destructive";
 }
 
-function DeadlineCell({ iso }: { iso: string | null }) {
-  if (!iso) return <span className="text-muted-foreground">-</span>;
+function DeadlineCell({ iso, active }: { iso: string | null; active: boolean }) {
+  // `active` means research_stage is sitting on exactly this field right
+  // now (see College.research_stage) — never shown once a value has
+  // actually landed, even if the backend hasn't advanced the stage marker
+  // past this field yet.
+  if (!iso) return active ? <LoadingCell /> : <span className="text-muted-foreground">-</span>;
   const days = daysUntil(iso);
   const crunch = days >= 0 && days <= 14;
   return (
@@ -120,6 +132,27 @@ function DeadlineCell({ iso }: { iso: string | null }) {
   );
 }
 
+/** Shown in the Requirements cell while College.requirementsTotal is set —
+ * requirements are saved in small paced batches (see requirements_agent.py
+ * Stage 5), so `done` climbs visibly toward `total` instead of the count
+ * jumping straight from nothing to its final value. */
+function RequirementsProgressCell({ done, total }: { done: number; total: number }) {
+  const fraction = total > 0 ? done / total : 0;
+  return (
+    <div className="flex items-center gap-2" title={`${done} of ${total} requirements found`}>
+      <span className="text-xs tabular-nums text-muted-foreground">
+        {done}/{total}
+      </span>
+      <div className="h-1.5 w-16 shrink-0 rounded-full bg-secondary overflow-hidden">
+        <div
+          className="h-full rounded-full bg-navy transition-[width] duration-300 ease-out"
+          style={{ width: `${Math.min(100, Math.max(4, fraction * 100))}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ReadinessCell({ readiness }: { readiness: Readiness }) {
   if (readiness.computedAt === null) {
     return <span className="text-muted-foreground">Not scored yet</span>;
@@ -131,7 +164,13 @@ function ReadinessCell({ readiness }: { readiness: Readiness }) {
     b.recommendations
   )}% · Testing ${Math.round(b.testing)}% · Deadline pressure ${Math.round(b.deadline)}%`;
   return (
-    <div className="flex items-center gap-2" title={title}>
+    // Keyed by computedAt: readiness_agent.py now persists one college at a
+    // time (paced, like the deadline/logo staging above), so the very first
+    // score a college gets pops in on its own beat rather than silently
+    // replacing "Not scored yet". A later recompute reusing the same
+    // computedAt-ish moment won't replay it, which is fine — the arrival
+    // itself is the moment worth animating.
+    <div key={readiness.computedAt} className="flex items-center gap-2 animate-in fade-in zoom-in-90 duration-500" title={title}>
       <span className={cn("font-medium tabular-nums", TONE_TEXT[tone])}>{score}%</span>
       <div className="h-1.5 w-14 shrink-0 rounded-full bg-secondary overflow-hidden">
         <div
@@ -161,7 +200,6 @@ function ReadinessCell({ readiness }: { readiness: Readiness }) {
 export function CollegeTable({
   colleges,
   requirementsByCollege,
-  researching,
   onDelete,
 }: CollegeTableProps) {
   return (
@@ -217,8 +255,17 @@ export function CollegeTable({
                         already on screen — a step-by-step arrival worth a
                         beat of its own animation, not just a silent value
                         change. Unaffected rows never replay this. */}
-                    <span key={college.logoUrl ?? "pending"} className="animate-in fade-in zoom-in-75 duration-500">
+                    <span
+                      key={college.logoUrl ?? "pending"}
+                      className="relative animate-in fade-in zoom-in-75 duration-500"
+                    >
                       <CollegeAvatar college={college} />
+                      {!college.logoUrl && college.researchStage === "logo" && (
+                        <Loader2
+                          className="absolute -right-1 -bottom-1 h-3.5 w-3.5 animate-spin rounded-full bg-background text-muted-foreground"
+                          aria-label="Searching for logo…"
+                        />
+                      )}
                     </span>
                     {college.name}
                   </Link>
@@ -227,20 +274,37 @@ export function CollegeTable({
                   <StatusBadge status={college.status} />
                 </td>
                 <td className={BODY_CELL}>
-                  <DeadlineCell iso={college.deadlines.ea} />
+                  <DeadlineCell
+                    iso={college.deadlines.ea}
+                    active={college.researchStage === "ea"}
+                  />
                 </td>
                 <td className={BODY_CELL}>
-                  <DeadlineCell iso={college.deadlines.ed} />
+                  <DeadlineCell
+                    iso={college.deadlines.ed}
+                    active={college.researchStage === "ed"}
+                  />
                 </td>
                 <td className={BODY_CELL}>
-                  <DeadlineCell iso={college.deadlines.rd} />
+                  <DeadlineCell
+                    iso={college.deadlines.rd}
+                    active={college.researchStage === "rd"}
+                  />
                 </td>
                 <td className={BODY_CELL}>
-                  <DeadlineCell iso={college.deadlines.financialAid} />
+                  <DeadlineCell
+                    iso={college.deadlines.financialAid}
+                    active={college.researchStage === "financialAid"}
+                  />
                 </td>
                 <td className={BODY_CELL}>
-                  {requirements.length === 0 ? (
-                    researching ? (
+                  {college.requirementsTotal != null ? (
+                    <RequirementsProgressCell
+                      done={requirements.length}
+                      total={college.requirementsTotal}
+                    />
+                  ) : requirements.length === 0 ? (
+                    college.researching ? (
                       <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         Researching…
@@ -249,7 +313,16 @@ export function CollegeTable({
                       <span className="text-muted-foreground">Not researched yet</span>
                     )
                   ) : (
-                    <span className="inline-flex items-center gap-1.5">
+                    // Keyed by count: requirements_agent.py's Stage 5 now
+                    // saves requirements in small paced batches (see
+                    // RequirementsProgressCell above for while that's still
+                    // in progress), so this pops in the moment the final
+                    // batch lands instead of silently replacing the
+                    // progress bar.
+                    <span
+                      key={requirements.length}
+                      className="inline-flex items-center gap-1.5 animate-in fade-in zoom-in-90 duration-500"
+                    >
                       {requirements.length} tracked
                       {needsVerification > 0 && (
                         <span className="inline-flex items-center gap-1 text-warning">

@@ -35,6 +35,7 @@ without waiting for a full re-research pass.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncGenerator
 
 from google.adk.agents import BaseAgent, LlmAgent, SequentialAgent
@@ -125,7 +126,15 @@ schema, with one entry per college_id above."""
 
 def _persist_readiness(callback_context) -> None:
     """Runs as an after_agent_callback for the same reason as every other
-    output_schema agent's persist step in this codebase."""
+    output_schema agent's persist step in this codebase.
+
+    Writes one college at a time with a pacing pause between them, same
+    technique as requirements_agent.py's Stage 1/3/4 — the LLM explanation
+    call above is still one batched request (cost control), this only
+    staggers the already-computed results landing in Firestore, so the
+    Colleges table's Readiness column reveals per college instead of every
+    row jumping to a score in the same poll tick.
+    """
     user_id = callback_context.user_id
     context_payload = callback_context.state.get("college_readiness_context") or {}
     explanation_list = callback_context.state.get("readiness_explanations") or {}
@@ -134,7 +143,9 @@ def _persist_readiness(callback_context) -> None:
         for item in explanation_list.get("explanations", [])
     }
 
-    for college_id, info in context_payload.items():
+    for i, (college_id, info) in enumerate(context_payload.items()):
+        if i > 0:
+            time.sleep(0.4)
         # Falls back to the raw deterministic facts if the LLM ever drops a
         # college_id — every college still gets a truthful explanation,
         # never a blank one, even if the LLM's phrasing pass is incomplete.

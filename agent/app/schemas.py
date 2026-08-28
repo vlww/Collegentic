@@ -216,6 +216,57 @@ class College(FirestoreModel):
     readiness: Readiness = Field(default_factory=Readiness)
     priority: float = 0
     last_researched_at: datetime | None = None
+    # Set the moment this college's row is first created (see
+    # orchestrator_agent.py's PerCollegeResearchAndExtraction) — lets
+    # get_tracked_colleges return colleges in the order the student listed
+    # them (Firestore's default read order is not creation order) rather
+    # than an arbitrary one.
+    created_at: datetime | None = None
+    # True from the moment a college's own per-college research pass starts
+    # until its requirements are persisted — a transient, backend-only
+    # progress signal (distinct from `status`, which tracks the student's
+    # OWN application progress) that the frontend uses to show a loading
+    # spinner in a still-empty cell rather than a plain "-", since a value
+    # missing on a college with researching=true genuinely is still being
+    # looked for, not confirmed absent.
+    researching: bool = False
+    # Exactly which field is being actively looked for right now, while
+    # researching=true — one of "logo", "ea", "ed", "rd", "financialAid",
+    # "requirements", or null (before research starts, or once it's fully
+    # done). Drives exactly where CollegeTable.tsx shows its ONE loading
+    # spinner at a time — "logo" first (color is applied silently during
+    # this same window, since it's already known the instant extraction
+    # completes and has no lookup of its own to wait on), then each
+    # deadline kind in order, then "requirements" last. Deliberately more
+    # precise than "researching=true and this field is still empty": that
+    # made every still-empty cell spin at once the moment a college started,
+    # reading as "the whole row loading together" rather than one thing
+    # being looked up at a time.
+    research_stage: str | None = None
+    # Set once extraction knows how many requirements this college has,
+    # right before saving them (in small paced batches, not all in one
+    # write) — the frontend divides however many Requirement docs currently
+    # exist by this to render a progress bar instead of a growing,
+    # denominator-less count. Reset to null once every requirement is
+    # actually saved, at which point the frontend swaps the bar for the
+    # final "N tracked" count.
+    requirements_total: int | None = None
+
+
+# --- users/{userId}/pipelineProgress/current ---------------------------------
+
+
+class PipelineProgress(FirestoreModel):
+    """Single doc (id always "current"), overwritten at the start of every
+    Orchestrator run — total/completed college counts plus a start
+    timestamp, purely so the frontend can render "researching college 2 of
+    4" and a rough time-remaining estimate while a run is in flight. Not
+    used for anything else; the real per-agent detail already lives in
+    AgentRun docs (Agent Activity page)."""
+
+    total_colleges: int
+    completed_colleges: int = 0
+    started_at: datetime
 
 
 # --- users/{userId}/colleges/{collegeId}/requirements/{requirementId} -------

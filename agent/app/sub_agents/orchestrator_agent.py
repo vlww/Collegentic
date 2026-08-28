@@ -45,9 +45,15 @@ an approval step here would also contradict § Welcome / Initial Setup's
 
 from __future__ import annotations
 
-from google.adk.agents import LlmAgent, ParallelAgent, SequentialAgent
+import logging
+from collections.abc import AsyncGenerator
+
+from google.adk.agents import BaseAgent, LlmAgent, ParallelAgent, SequentialAgent
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event, EventActions
 from google.adk.tools import ToolContext
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.utils.context_utils import Aclosing
 
 from app.callbacks import log_agent_run_complete, log_agent_run_start
 from app.config import config
@@ -61,6 +67,8 @@ from app.sub_agents.research_agent import college_research_agent
 from app.sub_agents.task_planning_agent import task_planning_pipeline
 from app.tools import firestore_tools as ft
 
+logger = logging.getLogger(__name__)
+
 # .agents-cli-spec.md § Architecture step 3, now complete: conflict_pipeline
 # (Milestone 10) and essay_matching_pipeline (Milestone 11) both only read
 # Requirements/Recommendations/StudentMaterials — neither depends on the
@@ -70,6 +78,118 @@ cross_college_analysis = ParallelAgent(
     description="Detects cross-college conflicts and scores essay reuse-fit concurrently.",
     sub_agents=[conflict_pipeline, essay_matching_pipeline],
 )
+
+
+class PerCollegeResearchAndExtraction(BaseAgent):
+    """Runs college_research_agent -> requirements_pipeline once per college
+    in `new_college_names`, one college at a time, instead of researching
+    every newly-requested college in a single batched call.
+
+    Found live: college_research_agent and requirements_agent each write
+    ALL researched colleges' data to session state in ONE LLM call (their
+    `output_key` replaces the whole value), so with every college batched
+    into that one call, every college's data became known at the exact
+    same instant — no matter how requirements_agent.py's persist stage
+    staggered its OWN Firestore writes afterward (a few hundred ms apart),
+    the entire reveal was compressed into the last few seconds of an
+    otherwise multi-minute run. A student watching the Colleges table saw
+    two long stretches: blank rows, then nothing changing for the whole
+    research duration, then everything landing in one visible burst —
+    not "one college's cell updates the moment it's found."
+
+    Looping per college instead means each college's row visibly completes
+    at the real moment ITS OWN research finishes, spread naturally across
+    the whole run — while a later college is still researching, an earlier
+    one's row can already be fully populated. Reuses college_research_agent
+    and requirements_pipeline entirely unchanged (same LLM calls, same
+    Firestore persistence, same before/after_agent_callback Agent Activity
+    logging) — this only changes how many colleges' worth of state each
+    invocation covers, by scoping `new_college_names` down to one name per
+    iteration before delegating to them, the same way LoopAgent (see
+    requirements_agent.py's requirements_confidence_loop) re-invokes the
+    same sub-agent instances multiple times against a shared ctx.
+
+    Every college's row already exists by the time this loop runs —
+    college_intake_agent creates them all up front (see its module
+    docstring for why that's fast enough to do eagerly). This loop instead
+    owns each college's loading-spinner lifecycle: flips `researching` true
+    and `research_stage` to "logo" right as it reaches that college (see
+    firestore_tools.start_college_research), then clears both (plus
+    `requirements_total`) and advances PipelineProgress once its
+    requirements are persisted (firestore_tools.finish_college_research).
+
+    A college's research genuinely failing partway through still aborts the
+    whole turn here (no per-college try/except) — consistent with
+    api.py's _run_pipeline_with_auto_restart, which retries the entire
+    Orchestrator turn on any failure; college_intake_agent already treats
+    any college with zero Requirement docs (including one this loop hadn't
+    reached yet) as still needing research, so a retry picks up exactly
+    where this loop left off rather than re-doing already-persisted work.
+    """
+
+    def __init__(self, name: str = "per_college_research_and_extraction"):
+        super().__init__(
+            name=name,
+            description=(
+                "Researches and extracts requirements for each newly "
+                "requested college one at a time, so the Colleges table "
+                "fills in progressively rather than all at once."
+            ),
+            sub_agents=[college_research_agent, requirements_pipeline],
+        )
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        college_names: list[str] = list(ctx.session.state.get("new_college_names", []))
+        if not college_names:
+            return
+        user_id = ctx.session.user_id
+        # college_intake_agent already created every one of these colleges'
+        # rows (and populated this mapping) up front — this loop only
+        # drives the loading-spinner state, never row creation.
+        name_to_id: dict[str, str] = dict(
+            ctx.session.state.get("college_name_to_id", {})
+        )
+        for college_name in college_names:
+            college_id = name_to_id[college_name]
+            ft.start_college_research(user_id, college_id)
+            yield Event(
+                author=self.name,
+                actions=EventActions(
+                    state_delta={
+                        # Scopes state down to just this one college before
+                        # delegating — college_research_agent's
+                        # `{new_college_names?}` template and
+                        # requirements_agent's extraction both key off this
+                        # same list, so a single-item list here is what
+                        # makes each of their output keys
+                        # (raw_research_findings, extracted_requirements) —
+                        # and thus everything requirements_agent.py's
+                        # persist callback writes — cover exactly this one
+                        # college.
+                        "new_college_names": [college_name],
+                    }
+                ),
+            )
+            async with Aclosing(college_research_agent.run_async(ctx)) as agen:
+                async for event in agen:
+                    yield event
+            async with Aclosing(requirements_pipeline.run_async(ctx)) as agen:
+                async for event in agen:
+                    yield event
+            try:
+                ft.finish_college_research(user_id, college_id)
+                ft.advance_pipeline_progress(user_id)
+            except Exception:
+                logger.warning(
+                    "Failed to clear researching flag / advance progress for %r",
+                    college_name,
+                    exc_info=True,
+                )
+
+
+per_college_research_and_extraction = PerCollegeResearchAndExtraction()
 
 college_intake_pipeline = SequentialAgent(
     name="college_intake_pipeline",
@@ -83,8 +203,7 @@ college_intake_pipeline = SequentialAgent(
     ),
     sub_agents=[
         college_intake_agent,
-        college_research_agent,
-        requirements_pipeline,
+        per_college_research_and_extraction,
         cross_college_analysis,
         task_planning_pipeline,
         priority_pipeline,
@@ -185,7 +304,11 @@ correction you're already confident about.
 YOUR STEPS, IN ORDER:
 1. Parse the student's message into a clean list of college names, applying
    NAME NORMALIZATION above to every single one before doing anything else.
-2. Call `record_requested_colleges` with that list.
+   List them in the SAME ORDER the student mentioned them — that order
+   becomes the order colleges are researched and shown in on the Colleges
+   table, so if the student named Harvard first, Harvard must be first in
+   this list too, not reordered.
+2. Call `record_requested_colleges` with that list, in that same order.
 3. Call `college_intake_pipeline` (pass a short one-line request string,
    e.g. "Research and track these colleges.") to research, extract
    requirements, and plan tasks for any newly added colleges. This runs

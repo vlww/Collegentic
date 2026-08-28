@@ -61,12 +61,29 @@ def test_intake_pipeline_stage_order() -> None:
     stage_names = [agent.name for agent in college_intake_pipeline.sub_agents]
     assert stage_names == [
         "college_intake_agent",
-        "college_research_agent",
-        "requirements_pipeline",
+        "per_college_research_and_extraction",
         "cross_college_analysis",
         "task_planning_pipeline",
         "priority_pipeline",
         "readiness_pipeline",
+    ]
+
+
+def test_per_college_stage_researches_then_extracts() -> None:
+    """college_research_agent and requirements_pipeline are wrapped inside
+    per_college_research_and_extraction (see its docstring) so each newly
+    requested college is fully researched and persisted before the next
+    college's research starts, instead of every college being researched in
+    one batched call — this is what makes the Colleges table fill in
+    progressively rather than all at once."""
+    stage = next(
+        agent
+        for agent in college_intake_pipeline.sub_agents
+        if agent.name == "per_college_research_and_extraction"
+    )
+    assert [agent.name for agent in stage.sub_agents] == [
+        "college_research_agent",
+        "requirements_pipeline",
     ]
 
 

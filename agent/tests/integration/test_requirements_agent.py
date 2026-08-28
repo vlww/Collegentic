@@ -53,6 +53,7 @@ def user_id():
     for coll_fn in (ft._research_sources, ft._agent_runs, ft._tasks):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
+    ft._pipeline_progress_doc(uid).delete()
 
 
 def test_full_pipeline_researches_and_persists_requirements(user_id: str) -> None:
@@ -113,3 +114,82 @@ def test_full_pipeline_researches_and_persists_requirements(user_id: str) -> Non
     assert "task_planning_agent" in agent_names
     assert "priority_explanation_agent" in agent_names
     assert all(run.status.value == "completed" for run in runs)
+
+
+def test_multiple_colleges_are_researched_one_at_a_time_not_batched(
+    user_id: str,
+) -> None:
+    """Regression test for PerCollegeResearchAndExtraction
+    (orchestrator_agent.py): with two newly requested colleges,
+    college_research_agent must run TWICE (once per college, each a
+    separate AgentRun) rather than once covering both — and the second
+    college's research run must start only after the first college's
+    requirements are already persisted, proving the colleges are genuinely
+    researched and revealed to the Colleges table one at a time rather than
+    both landing in Firestore at the same moment."""
+    from app.sub_agents.orchestrator_agent import college_intake_pipeline
+
+    async def _go() -> None:
+        runner = InMemoryRunner(agent=college_intake_pipeline, app_name="test")
+        session = await runner.session_service.create_session(
+            app_name="test",
+            user_id=user_id,
+            state={"requested_colleges": ["Rice University", "Emory University"]},
+        )
+        async for _ in runner.run_async(
+            new_message=types.Content(
+                role="user", parts=[types.Part.from_text(text="go")]
+            ),
+            user_id=user_id,
+            session_id=session.id,
+        ):
+            pass
+
+    asyncio.run(_go())
+
+    colleges = ft.get_tracked_colleges(user_id)
+    assert len(colleges) == 2
+    # get_tracked_colleges sorts by created_at — must match the order the
+    # colleges were requested (and thus researched) in, not an arbitrary
+    # Firestore read order.
+    assert [c.name for c in colleges] == ["Rice University", "Emory University"]
+    for college in colleges:
+        assert len(ft.get_requirements(user_id, [college.id])) > 0
+        # Fully done by the time the whole pipeline finishes — not left
+        # stuck showing a loading spinner (or a requirements progress bar)
+        # forever.
+        assert college.researching is False
+        assert college.research_stage is None
+        assert college.requirements_total is None
+        assert college.created_at is not None
+
+    progress = ft.get_pipeline_progress(user_id)
+    assert progress is not None
+    assert progress.total_colleges == 2
+    assert progress.completed_colleges == 2
+
+    runs = ft.get_agent_runs(user_id)
+    research_runs = sorted(
+        (r for r in runs if r.agent_name == "college_research_agent"),
+        key=lambda r: r.started_at,
+    )
+    extraction_runs = sorted(
+        (r for r in runs if r.agent_name == "requirements_agent"),
+        key=lambda r: r.started_at,
+    )
+    assert len(research_runs) == 2, (
+        "Expected one college_research_agent run per college, not one "
+        f"batched run — got {len(research_runs)}"
+    )
+    assert len(extraction_runs) == 2, (
+        "Expected one requirements_agent run per college, not one batched "
+        f"run — got {len(extraction_runs)}"
+    )
+    first_extraction, second_research = extraction_runs[0], research_runs[1]
+    assert first_extraction.completed_at is not None
+    # The second college's research must start only once the first
+    # college's whole research-through-extraction pass has actually
+    # finished (Firestore already has its requirements) — i.e. genuinely
+    # sequential, one college fully revealed before the next begins, not
+    # both colleges' data becoming known at the same moment.
+    assert second_research.started_at >= first_extraction.completed_at

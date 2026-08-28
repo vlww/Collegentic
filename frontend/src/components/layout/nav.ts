@@ -29,6 +29,6 @@ export const NAV_ITEMS: NavItem[] = [
   { to: "/tasks", label: "Tasks", icon: CheckSquare },
   { to: "/essays", label: "Essays", icon: FileText },
   { to: "/progress", label: "My Progress", icon: ClipboardList },
-  { to: "/readiness", label: "Application Readiness", icon: Gauge },
+  { to: "/readiness", label: "App Readiness", icon: Gauge },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];

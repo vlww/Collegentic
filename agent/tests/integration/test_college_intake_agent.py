@@ -33,6 +33,7 @@ def user_id():
     yield uid
     for college in ft.get_tracked_colleges(uid):
         ft._colleges(uid).document(college.id).delete()
+    ft._pipeline_progress_doc(uid).delete()
 
 
 def _run_intake(user_id: str, requested: list[str]) -> dict:
@@ -56,17 +57,34 @@ def _run_intake(user_id: str, requested: list[str]) -> dict:
     return asyncio.run(_go())
 
 
-def test_creates_new_colleges_and_reuses_existing_by_name(user_id: str) -> None:
+def test_creates_new_colleges_up_front_in_request_order(user_id: str) -> None:
+    """CollegeIntakeAgent creates a brand-new college's Firestore row right
+    away, for every requested college at once — this is fast (pure
+    bookkeeping, no LLM/search call; the name itself was already resolved
+    by the Orchestrator's own parsing step before this ever runs), so a
+    judge sees the full requested list take shape almost immediately
+    instead of waiting for each college's (much slower) research to finish
+    before the next one's row even appears. Only the actual RESEARCH is
+    sequential — see PerCollegeResearchAndExtraction in
+    orchestrator_agent.py."""
     delta = _run_intake(user_id, ["MIT", "Rice University"])
-    assert set(delta["new_college_names"]) == {"MIT", "Rice University"}
+    assert delta["new_college_names"] == ["MIT", "Rice University"]
     assert set(delta["college_name_to_id"].keys()) == {"MIT", "Rice University"}
+    assert not ft.get_college(user_id, delta["college_name_to_id"]["MIT"]).researching
 
-    # Give MIT an actual Requirement doc, as a real research pass would —
-    # only a college that's actually been researched should be excluded
-    # from new_college_names on a later request (see .agents-cli-spec.md §
-    # Cost Control, and test_stub_college_is_re_added_to_new_college_names
-    # below for the "created but never researched" case this doesn't cover).
-    mit_id = delta["college_name_to_id"]["MIT"]
+    tracked = ft.get_tracked_colleges(user_id)
+    assert [c.name for c in tracked] == ["MIT", "Rice University"]  # request order
+
+    progress = ft.get_pipeline_progress(user_id)
+    assert progress is not None
+    assert progress.total_colleges == 2
+    assert progress.completed_colleges == 0
+
+
+def test_reuses_existing_college_by_name_and_excludes_it_once_researched(
+    user_id: str,
+) -> None:
+    mit_id = ft.save_college(user_id, College(name="MIT"))
     ft.save_requirements(
         user_id,
         [Requirement(college_id=mit_id, type="essay", description="Personal statement.")],
@@ -74,13 +92,15 @@ def test_creates_new_colleges_and_reuses_existing_by_name(user_id: str) -> None:
 
     # Re-requesting the same name (any case) must reuse the existing doc,
     # not create a duplicate, and must not re-flag it for research now that
-    # it's actually been researched.
-    delta2 = _run_intake(user_id, ["mit", "Stanford"])
-    assert delta2["new_college_names"] == ["Stanford"]
-    assert delta2["college_name_to_id"]["mit"] == mit_id
+    # it's actually been researched — while "Stanford" (brand new) still
+    # gets a fresh row created right away.
+    delta = _run_intake(user_id, ["mit", "Stanford"])
+    assert delta["new_college_names"] == ["Stanford"]
+    assert delta["college_name_to_id"]["mit"] == mit_id
+    assert "Stanford" in delta["college_name_to_id"]
 
     tracked = ft.get_tracked_colleges(user_id)
-    assert len(tracked) == 3  # MIT, Rice, Stanford — not 4
+    assert len(tracked) == 2  # MIT (reused) + Stanford (newly created)
 
 
 def test_reuses_existing_college_by_alias(user_id: str) -> None:

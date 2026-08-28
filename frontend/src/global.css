@@ -3,6 +3,17 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* "Maintanker" by Salamahtype (Personal Use Only — see
+   assets/fonts/Maintanker-LICENSE.txt) — the sidebar's "Collegentic"
+   logotype only, nowhere else in the app. */
+@font-face {
+  font-family: "Maintanker";
+  src: url("./assets/fonts/Maintanker.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 /*
  * Collegentic design tokens: navy is the dominant structural color
  * (sidebar, headers, large surfaces); orange is reserved for actions,
@@ -82,22 +93,23 @@
   --warning: #B8790A;
   --warning-foreground: #FFFFFF;
 
-  --navy: #0B1F3A;
+  --navy: #06234C;
   --navy-foreground: #FFFFFF;
-  --orange: #DD7A16;
+  --orange: #FD6302;
   --orange-foreground: #FFFFFF;
-  --orange-tint: #FCEBD6;
+  --orange-tint: #FEE6D6;
 
-  /* Sidebar/header chrome: a light, muted blue-grey field with dark navy
-     text, so the logo's navy silhouette and nav labels read as ink-on-mist
-     rather than the app's usual navy-on-light structural chrome. */
-  --sidebar: #E7E9EF;
+  /* Sidebar/header chrome: a light, greyish blue field, its own border set
+     to the same hex (see AppLayout.tsx's header, pinned to this same
+     variable) so the seam between sidebar and content doesn't read as its
+     own visible line. */
+  --sidebar: #E4EAF6;
   --sidebar-foreground: #16294A;
   --sidebar-primary: #DD7A16;
   --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #D6D9E2;
+  --sidebar-accent: #D3DCEF;
   --sidebar-accent-foreground: #0B1F3A;
-  --sidebar-border: #D6D9E2;
+  --sidebar-border: #E4EAF6;
   --sidebar-ring: #DD7A16;
 }
 
@@ -156,20 +168,26 @@
 /* A pastel wash of a college's real (or fallback) accent color — set
    `--school-accent` inline per-row/card (see CollegeAvatar.tsx's
    collegeAccentColor). Mixed relative to --background first (so it stays
-   in the right ballpark for light/dark mode), then lightened another 12%
-   toward white on top of that — two rounds of "too dark" feedback landed
-   on this as the actually-pastel result. */
+   in the right ballpark for light/dark mode), then lightened toward white
+   on top of that. The accent share was nudged up (3% -> 5%, 8% -> 10%) and
+   the white overlay dialed back (6% -> 2%) so the per-school color actually
+   reads instead of washing out to near-gray. */
 .school-tint {
   background-color: color-mix(
     in srgb,
-    white 12%,
-    color-mix(in srgb, var(--school-accent) 3%, var(--background))
+    white 2%,
+    color-mix(in srgb, var(--school-accent) 5%, var(--background))
   );
+  /* Matches the row's border-left cell (`transition-colors duration-700`
+     in CollegeTable.tsx) — school color research lands live via polling
+     (requirements_agent.py's Stage 1), so the tint should visibly ease in
+     rather than snap the instant --school-accent updates. */
+  transition: background-color 700ms ease;
 }
 tr.school-tint:hover {
   background-color: color-mix(
     in srgb,
-    white 12%,
-    color-mix(in srgb, var(--school-accent) 8%, var(--background))
+    white 2%,
+    color-mix(in srgb, var(--school-accent) 10%, var(--background))
   );
 }

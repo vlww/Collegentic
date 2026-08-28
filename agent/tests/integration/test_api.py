@@ -26,6 +26,7 @@ covered at the agent level by test_orchestrator_agent.py.
 """
 
 import uuid
+from datetime import datetime
 
 import pytest
 from fastapi import FastAPI
@@ -34,6 +35,7 @@ from fastapi.testclient import TestClient
 from app.api import router as api_router
 from app.schemas import (
     College,
+    CollegeDeadlines,
     ConfidenceLevel,
     Conflict,
     EssayMatch,
@@ -445,3 +447,142 @@ def test_recompute_priorities_refreshes_score_and_explanation_together(
     # in a number that no longer matches the refreshed score).
     assert "stale sentence" not in result[0]["priorityExplanation"]
     assert result[0]["priorityExplanation"] != ""
+
+
+def test_recompute_priorities_limit_persists_only_top_tasks(
+    client: TestClient, user_id: str
+) -> None:
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    urgent_id, distant_id = ft.save_tasks(
+        user_id,
+        [
+            Task(
+                title="Draft essay",
+                college_id=college_id,
+                deadline=ft.now(),
+                required=True,
+                source_requirement_id="r1",
+            ),
+            Task(
+                title="Optional supplement",
+                college_id=college_id,
+                deadline=None,
+                required=False,
+                source_requirement_id="r2",
+            ),
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.post(
+        "/priorities/recompute", params={"limit": 1}, headers=headers
+    ).json()
+    assert len(result) == 1
+    assert result[0]["id"] == urgent_id
+
+    # The lower-ranked task never got persisted — it's still at its
+    # zero-value default, confirming `limit` skipped its Firestore write.
+    stored = {task.id: task for task in ft.get_tasks(user_id)}
+    assert stored[urgent_id].priority_score > 0
+    assert stored[distant_id].priority_score == 0
+
+
+def test_recompute_priorities_falls_back_to_college_deadline(
+    client: TestClient, user_id: str
+) -> None:
+    rd_deadline = ft.now()
+    college_id = ft.save_college(
+        user_id,
+        College(name="Rice University", deadlines=CollegeDeadlines(rd=rd_deadline)),
+    )
+    [task_id] = ft.save_tasks(
+        user_id,
+        [
+            Task(
+                title="Rice Main Essay",
+                college_id=college_id,
+                deadline=None,
+                source_requirement_id="r1",
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.post("/priorities/recompute", headers=headers).json()
+    assert len(result) == 1
+    assert result[0]["id"] == task_id
+    assert result[0]["deadline"] is None
+    assert result[0]["effectiveDeadline"] is not None
+    assert datetime.fromisoformat(result[0]["effectiveDeadline"]) == rd_deadline
+
+
+def test_replan_tasks_refreshes_title_without_duplicating(
+    client: TestClient, user_id: str
+) -> None:
+    """A task planned before task_planning_agent's title-format instruction
+    changed should get a fresh, short title in place — not a second task —
+    once /tasks/replan re-runs the pipeline against its still-live
+    Requirement. This is the fix for existing real accounts whose tasks
+    were created under an older prompt (save_tasks used to skip existing
+    source_requirement_id matches entirely, so a re-plan never touched
+    them)."""
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    [requirement_id] = ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why Rice? Tell us in 150 words or fewer.",
+                confidence=ConfidenceLevel.HIGH,
+            )
+        ],
+    )
+    [task_id] = ft.save_tasks(
+        user_id,
+        [
+            Task(
+                title="This is a long, old-style sentence describing the "
+                "Rice essay requirement in full",
+                college_id=college_id,
+                source_requirement_id=requirement_id,
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.post("/tasks/replan", headers=headers).json()
+    college_tasks = [t for t in result if t["collegeId"] == college_id]
+    assert len(college_tasks) == 1
+    assert college_tasks[0]["id"] == task_id
+    assert college_tasks[0]["title"] != "This is a long, old-style sentence " \
+        "describing the Rice essay requirement in full"
+
+
+def test_get_tasks_strips_redundant_verification_and_word_range_text(
+    client: TestClient, user_id: str
+) -> None:
+    """Tasks planned before task_planning_agent.py's instructions were
+    tightened may still have "verify"/"double-check" clauses and "(X to Y
+    words recommended)" ranges baked into their stored description — see
+    app/api.py's _clean_task_description. This is stripped at read time
+    (not a Firestore migration), so it applies to already-existing tasks
+    without needing a re-plan."""
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    [task_id] = ft.save_tasks(
+        user_id,
+        [
+            Task(
+                title="Rice Main Essay",
+                description="Draft your essay (500 to 700 words recommended). "
+                "Verify exact prompt details.",
+                college_id=college_id,
+                source_requirement_id="r1",
+            )
+        ],
+    )
+    headers = {"X-User-Id": user_id}
+
+    result = client.get("/tasks", headers=headers).json()
+    [task] = [t for t in result if t["id"] == task_id]
+    assert task["description"] == "Draft your essay."

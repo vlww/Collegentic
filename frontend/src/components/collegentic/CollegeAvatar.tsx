@@ -5,22 +5,18 @@ import type { College } from "@/lib/types";
 
 type Branded = Pick<College, "name" | "logoUrl" | "schoolColors">;
 
-/** Deterministic per-college color, drawn from the navy/orange family, for
- * colleges research hasn't found real school colors for yet — same college
- * always gets the same fallback color across renders. */
-const FALLBACK_COLORS = ["#0B1F3A", "#1E3660", "#2A4670", "#DD7A16", "#B8790A", "#5B6B82"];
-
-function fallbackColor(name: string): string {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-  return FALLBACK_COLORS[hash % FALLBACK_COLORS.length];
-}
+/** Placeholder color for colleges research hasn't found real school colors
+ * for yet — always the app's own navy (theme-aware via the CSS variable),
+ * not a per-college random pick, so an unresearched college reads as
+ * "not found yet" rather than looking like it has a real (if coincidental)
+ * brand color. */
+const FALLBACK_ACCENT_COLOR = "var(--navy)";
 
 /** A college's real primary brand color if research found one, else the
- * same deterministic fallback the avatar uses — one accent color per
- * college, shared by every place that wants to color-code by school. */
+ * shared placeholder — one accent color per college, used everywhere that
+ * wants to color-code by school. */
 export function collegeAccentColor(college: Branded): string {
-  return college.schoolColors.primary || fallbackColor(college.name);
+  return college.schoolColors.primary || FALLBACK_ACCENT_COLOR;
 }
 
 /** Sets the `--school-accent` CSS variable `.school-tint` (global.css)
@@ -39,10 +35,13 @@ function isLogobrandsLogo(url: string): boolean {
   return url.includes("logobrands.com");
 }
 
+// 30% larger than a plain h-7/h-9/h-14 chip — logos read too small at the
+// original sizing (found live: even the "lg" College Detail header avatar
+// still looked cramped next to the school's actual logo proportions).
 const SIZE_CLASSES = {
-  sm: "h-7 w-7 text-xs",
-  md: "h-9 w-9 text-sm",
-  lg: "h-14 w-14 text-lg",
+  sm: "h-9 w-9 text-sm",
+  md: "h-[47px] w-[47px] text-base",
+  lg: "h-[73px] w-[73px] text-xl",
 } as const;
 
 /**
@@ -50,8 +49,8 @@ const SIZE_CLASSES = {
  * one up) on a neutral white chip — logos are plain PNGs (a white
  * background is fine, no transparency needed) so the chip keeps them
  * legible against any row/card color. Falls back to a colored initial —
- * either the school's real primary color or a deterministic placeholder —
- * when there's no logo yet, or its URL fails to load.
+ * the school's real primary color if known, else the shared navy
+ * placeholder — when there's no logo yet, or its URL fails to load.
  */
 export function CollegeAvatar({
   college,

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Check, Eye } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils";
 import { acknowledgeConflict, getConflicts, resolveConflict } from "@/lib/api";
 import type { Conflict, ConflictSeverity } from "@/lib/types";
+
+const PREVIEW_N = 1;
 
 const SEVERITY_CLASSES: Record<ConflictSeverity, string> = {
   high: "border-destructive/30 bg-destructive/10 text-destructive",
@@ -56,53 +57,55 @@ export function ConflictAlerts({
     setConflicts((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
   }
 
+  const preview = visible.slice(0, PREVIEW_N);
+  const remaining = visible.length - preview.length;
+
   return (
-    <Card className="border-warning/30">
-      <CardContent>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3 flex items-center gap-1.5">
-          <AlertTriangle className="h-3.5 w-3.5 text-warning" />
-          Cross-College Conflicts
-        </h2>
-        <div className="space-y-3">
-          {visible.map((conflict) => (
-            <div
-              key={conflict.id}
-              className="rounded-md border border-border p-3 space-y-2"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="font-medium uppercase tracking-wide">
-                    {TYPE_LABEL[conflict.type]}
-                  </span>
-                  <span>·</span>
-                  <span>{conflict.collegeIds.map(collegeName).join(", ")}</span>
-                </div>
-                <Badge variant="outline" className={cn(SEVERITY_CLASSES[conflict.severity])}>
-                  {conflict.severity}
-                </Badge>
+    <div className="h-full rounded-lg border border-border shadow-sm overflow-hidden">
+      <h2 className="bg-navy text-navy-foreground px-4 py-2.5 text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5">
+        <AlertTriangle className="h-3.5 w-3.5 text-orange" />
+        Cross-College Conflicts
+      </h2>
+      <div className="divide-y divide-border">
+        {preview.map((conflict) => (
+          <div key={conflict.id} className="px-4 py-3 space-y-2">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+                <span className="font-medium uppercase tracking-wide shrink-0">
+                  {TYPE_LABEL[conflict.type]}
+                </span>
+                <span className="shrink-0">·</span>
+                <span className="truncate">{conflict.collegeIds.map(collegeName).join(", ")}</span>
               </div>
-              <p className="text-sm text-foreground">{conflict.description}</p>
-              <p className="text-sm text-muted-foreground">{conflict.recommendation}</p>
-              <div className="flex items-center gap-2 pt-1">
-                {conflict.status === "open" && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleAcknowledge(conflict.id)}
-                  >
-                    <Eye className="h-3.5 w-3.5" />
-                    Acknowledge
-                  </Button>
-                )}
-                <Button variant="outline" size="sm" onClick={() => handleResolve(conflict.id)}>
-                  <Check className="h-3.5 w-3.5" />
-                  Resolve
-                </Button>
-              </div>
+              <Badge variant="outline" className={cn("shrink-0", SEVERITY_CLASSES[conflict.severity])}>
+                {conflict.severity}
+              </Badge>
             </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+            <p className="text-sm text-foreground">{conflict.description}</p>
+            <div className="flex items-center gap-2 pt-1">
+              {conflict.status === "open" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleAcknowledge(conflict.id)}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  Acknowledge
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={() => handleResolve(conflict.id)}>
+                <Check className="h-3.5 w-3.5" />
+                Resolve
+              </Button>
+            </div>
+          </div>
+        ))}
+        {remaining > 0 && (
+          <p className="px-4 py-2 text-xs text-muted-foreground">
+            +{remaining} more conflict{remaining > 1 ? "s" : ""} not shown
+          </p>
+        )}
+      </div>
+    </div>
   );
 }

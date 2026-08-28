@@ -55,6 +55,7 @@ from app.schemas import (
     FirestoreModel,
     PendingAction,
     PendingActionStatus,
+    PipelineProgress,
     Readiness,
     Recommendation,
     Requirement,
@@ -125,6 +126,12 @@ def _agent_runs(user_id: str) -> CollectionReference:
 
 def _pending_actions(user_id: str) -> CollectionReference:
     return _user_doc(user_id).collection("pendingActions")
+
+
+def _pipeline_progress_doc(user_id: str):
+    """Single doc (id always "current"), not a growing collection — see
+    PipelineProgress's docstring."""
+    return _user_doc(user_id).collection("pipelineProgress").document("current")
 
 
 # --- Generic read/write helpers ----------------------------------------
@@ -206,7 +213,17 @@ def set_test_scores_submitted(user_id: str, submitted: bool) -> None:
 
 
 def get_tracked_colleges(user_id: str) -> list[College]:
-    return _read_all(_colleges(user_id), College)
+    """Sorted by `created_at` — the order colleges were actually added in,
+    which (per orchestrator_agent.py's PerCollegeResearchAndExtraction) now
+    matches the order the student listed them in, so the Colleges table
+    reads top-to-bottom the same way the student typed it. Sorted in
+    Python, not via Firestore `.order_by("createdAt")`: a query ordered on
+    a field excludes any document missing that field entirely, and every
+    College doc from before this field existed (including every demo-seeded
+    one — see demo_data.py) has no `created_at` at all, so an `order_by`
+    query would silently drop them from the table."""
+    colleges = _read_all(_colleges(user_id), College)
+    return sorted(colleges, key=lambda c: c.created_at or datetime.min.replace(tzinfo=UTC))
 
 
 def get_college(user_id: str, college_id: str) -> College | None:
@@ -218,6 +235,51 @@ def get_college(user_id: str, college_id: str) -> College | None:
 
 def save_college(user_id: str, college: College) -> str:
     return _upsert(_colleges(user_id), college)
+
+
+def create_college_placeholder(user_id: str, name: str) -> str:
+    """Creates a brand-new College doc for every newly requested college
+    right away (see college_intake_agent.py) — NOT researching yet
+    (`researching` stays its False default), just a named row appearing on
+    the table so a judge sees the full requested list take shape fast
+    (this is pure Firestore bookkeeping, no LLM/search call, so it's cheap
+    to do for every college up front), before the actual per-college
+    research loop (orchestrator_agent.py's PerCollegeResearchAndExtraction)
+    works through them one at a time. `created_at` is what
+    get_tracked_colleges sorts by, so rows land in request order."""
+    return save_college(user_id, College(name=name, created_at=now()))
+
+
+def start_college_research(user_id: str, college_id: str) -> None:
+    """Called right as PerCollegeResearchAndExtraction's loop reaches this
+    college — flips on the loading-spinner signal and starts the field
+    sequence at "logo" (see College.research_stage's docstring)."""
+    _colleges(user_id).document(college_id).update(
+        {"researching": True, "researchStage": "logo"}
+    )
+
+
+def advance_research_stage(user_id: str, college_id: str, stage: str) -> None:
+    """Moves the ONE active loading spinner to `stage` — see
+    College.research_stage's docstring for the field order this steps
+    through."""
+    _colleges(user_id).document(college_id).update({"researchStage": stage})
+
+
+def set_requirements_total(user_id: str, college_id: str, total: int) -> None:
+    """Lets the frontend render a requirements-saved-so-far progress bar
+    instead of a growing, denominator-less count — see
+    College.requirements_total's docstring."""
+    _colleges(user_id).document(college_id).update({"requirementsTotal": total})
+
+
+def finish_college_research(user_id: str, college_id: str) -> None:
+    """Called once this college's requirements are fully persisted — clears
+    every transient in-progress signal so no cell is left showing a
+    spinner or an in-progress bar forever."""
+    _colleges(user_id).document(college_id).update(
+        {"researching": False, "researchStage": None, "requirementsTotal": None}
+    )
 
 
 def save_readiness(user_id: str, college_id: str, readiness: Readiness) -> None:
@@ -374,10 +436,19 @@ def get_tasks(user_id: str, college_id: str | None = None) -> list[Task]:
 
 
 def save_tasks(user_id: str, tasks: list[Task]) -> list[str]:
-    """Upserts explicit ids as-is. For new tasks, skips creating one if a
-    task already exists for the same `source_requirement_id` — see
+    """Upserts explicit ids as-is. For new tasks (no `id`), matches by
+    `source_requirement_id` to avoid duplicate tasks on re-runs — see
     .agents-cli-spec.md § Task Planning Agent ("avoid generating duplicate
-    tasks")."""
+    tasks"). When a match is found, refreshes title/description/category in
+    place instead of leaving the original untouched: those three are pure
+    LLM-synthesis output (task_planning_agent.py's ExtractedTask) with no
+    other writer and no independent lifecycle, so a re-plan (e.g. after a
+    prompt change, or `POST /tasks/replan`) should update them rather than
+    leave a stale title stuck forever. Everything else — status, deadline,
+    estimated_minutes, priority_score/explanation, dependencies — is left
+    alone: those either have their own dedicated write path
+    (update_task_priority) or are documented write-once elsewhere
+    (Task.deadline, see app/api.py's recompute_priorities)."""
     collection = _tasks(user_id)
     ids: list[str] = []
     for task in tasks:
@@ -395,7 +466,15 @@ def save_tasks(user_id: str, tasks: list[Task]) -> list[str]:
                 .stream()
             )
             if existing:
-                ids.append(existing[0].id)
+                existing_id = existing[0].id
+                collection.document(existing_id).update(
+                    {
+                        "title": task.title,
+                        "description": task.description,
+                        "category": task.category,
+                    }
+                )
+                ids.append(existing_id)
                 continue
         ids.append(_upsert(collection, task))
     return ids
@@ -410,6 +489,25 @@ def update_task_priority(
     _tasks(user_id).document(task_id).update(
         {"priorityScore": score, "priorityExplanation": explanation}
     )
+
+
+def batch_update_task_priorities(
+    user_id: str, updates: list[tuple[str, float, str]]
+) -> None:
+    """Same partial update as `update_task_priority`, for many tasks in one
+    commit — app/api.py's recompute_priorities used to issue one sequential
+    `.update()` per task, which is what made switching to the Dashboard take
+    several seconds once a student had more than a handful of open tasks."""
+    if not updates:
+        return
+    collection = _tasks(user_id)
+    batch = _client().batch()
+    for task_id, score, explanation in updates:
+        batch.update(
+            collection.document(task_id),
+            {"priorityScore": score, "priorityExplanation": explanation},
+        )
+    batch.commit()
 
 
 # --- Recommendations -------------------------------------------------------
@@ -572,6 +670,39 @@ def get_agent_runs(user_id: str, pipeline_run_id: str | None = None) -> list[Age
     if pipeline_run_id:
         query = query.where(filter=FieldFilter("pipelineRunId", "==", pipeline_run_id))
     return sorted(_read_all(query, AgentRun), key=lambda run: run.started_at)
+
+
+# --- Pipeline progress (for the Colleges page's progress bar) ----------
+
+
+def start_pipeline_progress(user_id: str, total_colleges: int) -> None:
+    """Called once, right when the Orchestrator knows the full list of
+    colleges to research for this run (before any of their rows exist yet
+    — see college_intake_agent.py) — this is what lets the frontend show
+    "researching college 2 of 4" the instant a run starts, not only once
+    every college's row has already appeared. Overwrites any previous run's
+    doc; only one run is ever in flight per user at a time."""
+    progress = PipelineProgress(
+        total_colleges=total_colleges, completed_colleges=0, started_at=now()
+    )
+    _pipeline_progress_doc(user_id).set(
+        progress.model_dump(by_alias=True, exclude={"id"}, exclude_none=True)
+    )
+
+
+def advance_pipeline_progress(user_id: str) -> None:
+    """Called once per college, right after its requirements are persisted
+    — see requirements_agent.py's _persist_requirements_and_sources."""
+    _pipeline_progress_doc(user_id).update(
+        {"completedColleges": firestore.Increment(1)}
+    )
+
+
+def get_pipeline_progress(user_id: str) -> PipelineProgress | None:
+    doc = _pipeline_progress_doc(user_id).get()
+    if not doc.exists:
+        return None
+    return PipelineProgress.model_validate({**doc.to_dict(), "id": doc.id})
 
 
 # --- Human-in-the-loop pending actions ---------------------------------

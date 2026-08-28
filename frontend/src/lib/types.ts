@@ -44,6 +44,31 @@ export interface College {
   readiness: Readiness;
   priority: number;
   lastResearchedAt: string | null;
+  /** True while this college's own per-college research pass is actively
+   * running (see agent/app/schemas.py's College.researching) — an empty
+   * cell on a row with this true is still being looked for, not confirmed
+   * absent, so CollegeTable shows a loading spinner there instead of "-". */
+  researching: boolean;
+  /** Which one field is being actively looked for right now, while
+   * researching is true — "logo", "ea", "ed", "rd", "financialAid",
+   * "requirements", or null. See agent/app/schemas.py's
+   * College.research_stage — this is what lets CollegeTable show exactly
+   * ONE loading spinner at a time, in order, rather than every empty cell
+   * spinning together. */
+  researchStage: string | null;
+  /** Set while requirements are being saved for this college — lets
+   * CollegeTable render a "3 of 12 requirements" progress bar instead of a
+   * growing, denominator-less count. Null before/after that window. */
+  requirementsTotal: number | null;
+}
+
+/** Mirrors agent/app/schemas.py's PipelineProgress — polled while a
+ * research submission is in flight to drive the Colleges page's progress
+ * bar. `null` when no run has ever started for this account. */
+export interface PipelineProgress {
+  totalColleges: number;
+  completedColleges: number;
+  startedAt: string;
 }
 
 export type RequirementStatus =

@@ -5,6 +5,7 @@ import type {
   Conflict,
   EssayMatch,
   EssayPrompt,
+  PipelineProgress,
   Recommendation,
   RecommendationStatus,
   RecommenderType,
@@ -59,23 +60,6 @@ export async function startDemoSession(): Promise<void> {
   await apiFetch("/api/demo/seed", { method: "POST" });
 }
 
-export interface HealthStatus {
-  status: "ok" | "unreachable";
-  service?: string;
-}
-
-/** Pings the backend's liveness endpoint (no model/DB calls involved). */
-export async function checkHealth(): Promise<HealthStatus> {
-  try {
-    const res = await fetch("/api/health");
-    if (!res.ok) return { status: "unreachable" };
-    const data = await res.json();
-    return { status: "ok", service: data.service };
-  } catch {
-    return { status: "unreachable" };
-  }
-}
-
 class ApiError extends Error {
   constructor(
     message: string,
@@ -109,6 +93,11 @@ export function getCollege(collegeId: string): Promise<College> {
   return apiFetch(`/api/colleges/${collegeId}`);
 }
 
+/** Null when no research run has ever started for this account. */
+export function getPipelineProgress(): Promise<PipelineProgress | null> {
+  return apiFetch("/api/pipeline-progress");
+}
+
 /** Drops a college and everything derived from researching it (requirements,
  * essay prompts, research sources, tasks, essay matches, conflicts, and its
  * id out of any recommendation) — see app/api.py's delete_college. */
@@ -121,15 +110,39 @@ export function getRequirements(collegeIds?: string[]): Promise<Requirement[]> {
   return apiFetch(`/api/requirements${query}`);
 }
 
-export function getTasks(collegeId?: string): Promise<Task[]> {
+/** Same shape as Task, plus the college-deadline fallback app/api.py's
+ * `_effective_deadline` resolves — Task.deadline itself stays null for most
+ * tasks (see recompute_priorities' docstring), so this is what lets a
+ * caller show a real date instead of "-". Every task route returns this
+ * shape now, not just recomputePriorities. */
+export interface PrioritizedTask extends Task {
+  effectiveDeadline: string | null;
+}
+
+export function getTasks(collegeId?: string): Promise<PrioritizedTask[]> {
   const query = collegeId ? `?college_id=${collegeId}` : "";
   return apiFetch(`/api/tasks${query}`);
 }
 
 /** Refreshes priority scores only (no LLM call) — see app/api.py's
- * recompute_priorities for why this exists alongside the full agent pipeline. */
-export function recomputePriorities(): Promise<Task[]> {
-  return apiFetch("/api/priorities/recompute", { method: "POST" });
+ * recompute_priorities for why this exists alongside the full agent
+ * pipeline. Pass `limit` to only persist/return the top N by score (e.g.
+ * Today's Priorities, which only ever shows 5) — much cheaper than scoring
+ * and writing every open task just to display a handful. */
+export function recomputePriorities(limit?: number): Promise<PrioritizedTask[]> {
+  const query = limit !== undefined ? `?limit=${limit}` : "";
+  return apiFetch(`/api/priorities/recompute${query}`, { method: "POST" });
+}
+
+/** Re-runs task planning for every already-tracked college and returns the
+ * full refreshed task list — see app/api.py's replan_tasks for why this is
+ * the only way to get an already-researched college's tasks re-titled
+ * (orchestrator chat skips colleges it thinks are already done). Costs a
+ * real LLM call per college, unlike recomputePriorities, so this is a
+ * manual "Refresh titles" action, not something to call on every page
+ * load. */
+export function replanTasks(): Promise<PrioritizedTask[]> {
+  return apiFetch("/api/tasks/replan", { method: "POST" });
 }
 
 /** Refreshes readiness scores only (no LLM call) — see app/api.py's

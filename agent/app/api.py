@@ -38,16 +38,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from google.adk.runners import InMemoryRunner
 from google.genai import types
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+from app.config import config
 from app.demo_data import seed_demo_data
 from app.schemas import (
     AgentRunStatus,
+    College,
     ConflictStatus,
     MaterialType,
     Readiness,
@@ -57,8 +62,10 @@ from app.schemas import (
     RecommenderType,
     RequirementStatus,
     StudentMaterial,
+    Task,
     TaskStatus,
 )
+from app.sub_agents.task_planning_agent import task_planning_pipeline
 from app.tools import firestore_tools as ft
 from app.tools.scoring import (
     compute_priority_score,
@@ -76,6 +83,62 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+async def _run_pipeline_with_auto_restart(
+    user_id: str,
+    create_session,
+    run_session,
+    failure_detail: str,
+):
+    """Runs `run_session(session)` against a freshly created `session`, and
+    if it raises, automatically restarts the ENTIRE pipeline from scratch —
+    a brand-new session, the same input — up to config.max_pipeline_attempts
+    times before giving up.
+
+    An unhandled exception partway through a pipeline (LLM output
+    validation, a transient google_search/Firestore error, ...) used to
+    leave that turn's AgentRun docs stuck "running" forever and require a
+    human to notice the error and manually resend the exact same request to
+    recover — awkward for a student, and worse for a hackathon judge who
+    isn't hosting/babysitting this themselves. Every pipeline this backs
+    (college_intake_pipeline via the Orchestrator, task_planning_pipeline
+    via /tasks/replan) is already built to resume cleanly from a fresh run
+    of the same input rather than duplicating work or corrupting state —
+    e.g. college_intake_agent only re-researches a college with zero
+    Requirement docs (see its module docstring: "that's what makes 'resume
+    after an error' work by just re-submitting the same names") — so
+    retrying automatically here, instead of surfacing the error and waiting
+    for someone to retry it by hand, is safe and closes that gap.
+
+    Each failed attempt's still-"running" AgentRun docs are marked failed
+    (for Agent Activity visibility) before the next attempt starts, exactly
+    as a single failed run always was.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, config.max_pipeline_attempts + 1):
+        session = await create_session()
+        try:
+            # asyncio.shield, not a plain await: these pipelines run real
+            # web research and can take a minute or two, and a client
+            # disconnect (tab closed, page refreshed) mid-attempt shouldn't
+            # cancel the pipeline out from under itself — see
+            # send_orchestrator_message's original docstring note for the
+            # full reasoning (local uvicorn doesn't cancel on disconnect,
+            # but that's not guaranteed under every deployment target).
+            return await asyncio.shield(run_session(session))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+            logger.exception(
+                "Pipeline run failed for user %s (attempt %d/%d)",
+                user_id, attempt, config.max_pipeline_attempts,
+            )
+            for run in ft.get_agent_runs(user_id, pipeline_run_id=session.id):
+                if run.status == AgentRunStatus.RUNNING:
+                    ft.fail_agent_run(user_id, run.id, error_message=str(exc))  # type: ignore[arg-type]
+    raise HTTPException(status_code=502, detail=failure_detail) from last_exc
+
+
 def require_user_id(x_user_id: str | None = Header(default=None)) -> str:
     if not x_user_id:
         raise HTTPException(status_code=400, detail="X-User-Id header is required")
@@ -86,6 +149,16 @@ def require_user_id(x_user_id: str | None = Header(default=None)) -> str:
 def list_colleges(user_id: str = Depends(require_user_id)) -> list[dict]:
     colleges = ft.get_tracked_colleges(user_id)
     return [college.model_dump(mode="json", by_alias=True) for college in colleges]
+
+
+@router.get("/pipeline-progress")
+def get_pipeline_progress(user_id: str = Depends(require_user_id)) -> dict | None:
+    """Powers the Colleges page's progress bar — see
+    firestore_tools.start_pipeline_progress's docstring for why this exists
+    separately from just counting rows in `colleges`. Polled only while a
+    research submission is in flight; null once nothing has ever run."""
+    progress = ft.get_pipeline_progress(user_id)
+    return progress.model_dump(mode="json", by_alias=True) if progress else None
 
 
 @router.get("/colleges/{college_id}")
@@ -174,17 +247,127 @@ def update_requirement_progress(
     return {"status": "ok"}
 
 
+def _effective_deadline(task: Task, colleges_by_id: dict[str, College]) -> datetime | None:
+    college = colleges_by_id.get(task.college_id) if task.college_id else None
+    return resolve_effective_deadline(task.deadline, college.deadlines if college else None)
+
+
+# Matches a whole clause/sentence mentioning verification — e.g. "Note:
+# double-check details if needed." task_planning_agent.py's instructions no
+# longer generate this (the Tasks page's confidence badge already covers
+# it), but tasks planned before that change still have it stored verbatim;
+# stripped at read time rather than requiring every account to re-plan.
+_VERIFICATION_CLAUSE_RE = re.compile(
+    r"(?:^|(?<=[.!?]\s))[^.!?]*\b(?:verify|double-check|double check)\b[^.!?]*[.!?]?\s*",
+    re.IGNORECASE,
+)
+# Matches only an "X to Y words recommended" RANGE — not a plain "650 words"
+# limit, and not a genuine required range like "250-650 words" (no
+# "recommended"), which is real constraint info worth keeping. This is
+# specifically the extra "recommended" range some school pages publish on
+# top of the actual limit — noise, per requirements_agent.py's description
+# field instruction.
+_WORD_RANGE_RE = re.compile(
+    r"\(?\s*\d+\s*(?:-|to)\s*\d+\s*words?\s*recommended\s*\)?",
+    re.IGNORECASE,
+)
+
+
+def _clean_task_description(description: str | None) -> str | None:
+    if not description:
+        return description
+    cleaned = _VERIFICATION_CLAUSE_RE.sub("", description)
+    cleaned = _WORD_RANGE_RE.sub("", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\s+([.!?,;:])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned or None
+
+
+def _dump_task(task: Task, effective_deadline: datetime | None) -> dict:
+    """Same `Task` JSON shape every route already returns, plus
+    `effectiveDeadline` — see recompute_priorities' docstring for why this
+    exists: most tasks have no `deadline` of their own, so callers that
+    display a date (Today's Priorities, the Tasks page) need the resolved
+    college-deadline fallback rather than a mostly-null field."""
+    return {
+        **task.model_dump(mode="json", by_alias=True),
+        "description": _clean_task_description(task.description),
+        "effectiveDeadline": effective_deadline.isoformat() if effective_deadline else None,
+    }
+
+
 @router.get("/tasks")
 def list_tasks(
     college_id: str | None = None, user_id: str = Depends(require_user_id)
 ) -> list[dict]:
     tasks = ft.get_tasks(user_id, college_id)
-    return [task.model_dump(mode="json", by_alias=True) for task in tasks]
+    colleges_by_id = {
+        college.id: college for college in ft.get_tracked_colleges(user_id)
+    }
+    return [_dump_task(task, _effective_deadline(task, colleges_by_id)) for task in tasks]
+
+
+@router.post("/tasks/replan")
+async def replan_tasks(user_id: str = Depends(require_user_id)) -> list[dict]:
+    """Re-runs task_planning_pipeline directly, for every already-tracked
+    college, bypassing orchestrator_agent's own "skip college_intake_pipeline
+    if everything's already researched" judgment call — the only way an
+    already-researched college's tasks would otherwise get replanned is
+    naming a new college in the same /orchestrator/messages turn (which
+    re-scans existing colleges' requirements as a side effect) or a failed-
+    run retry. A student who just wants task_planning_agent's latest output
+    (e.g. after its title-format instructions changed) shouldn't have to
+    re-add every college to get it.
+
+    task_planning_pipeline is self-contained by design (TaskContextAgent
+    reads Requirements straight from Firestore rather than trusting
+    upstream pipeline state — see task_planning_agent.py's module
+    docstring), so it's safe to run in isolation like this; the same
+    InMemoryRunner shape already backs
+    tests/integration/test_task_planning_agent.py. Existing tasks get their
+    title/description/category refreshed in place rather than duplicated
+    (see firestore_tools.save_tasks).
+    """
+    runner = InMemoryRunner(agent=task_planning_pipeline, app_name="task_replan")
+
+    async def _create_session():
+        return await runner.session_service.create_session(
+            app_name="task_replan", user_id=user_id
+        )
+
+    async def _run(session) -> None:
+        async for _ in runner.run_async(
+            new_message=types.Content(
+                role="user", parts=[types.Part.from_text(text="replan")]
+            ),
+            user_id=user_id,
+            session_id=session.id,
+        ):
+            pass
+
+    await _run_pipeline_with_auto_restart(
+        user_id,
+        _create_session,
+        _run,
+        failure_detail="Refreshing tasks hit an error partway through, even after "
+        "automatically retrying. Check Agent Activity for details, then try "
+        "again.",
+    )
+    colleges_by_id = {
+        college.id: college for college in ft.get_tracked_colleges(user_id)
+    }
+    return [
+        _dump_task(task, _effective_deadline(task, colleges_by_id))
+        for task in ft.get_tasks(user_id)
+    ]
 
 
 @router.post("/priorities/recompute")
-def recompute_priorities(user_id: str = Depends(require_user_id)) -> list[dict]:
-    """Refreshes every non-Done task's priority score AND explanation,
+def recompute_priorities(
+    limit: int | None = None, user_id: str = Depends(require_user_id)
+) -> list[dict]:
+    """Refreshes non-Done tasks' priority score AND explanation,
     deterministically — no LLM call (app/tools/scoring.py). Deadlines march
     forward daily even when no new college research happens, so the full
     agent pipeline (app/sub_agents/priority_agent.py, which additionally
@@ -199,16 +382,32 @@ def recompute_priorities(user_id: str = Depends(require_user_id)) -> list[dict]:
     still said "score of 34.0", because that sentence had literally baked in
     the pre-recompute number). A plain, current sentence beats a polished,
     wrong one.
+
+    `limit`: Today's Priorities only ever displays the top 5, and scoring
+    itself is pure math (cheap) — the actual cost is Firestore round trips.
+    So every open task still gets scored in memory, but only the top `limit`
+    get their score persisted (one batched write) and returned, instead of
+    every open task getting its own sequential `.update()` plus a full
+    re-fetch at the end. Omit `limit` for the Tasks page's "Refresh", which
+    needs every task's score written and returned.
+
+    Each returned task also carries an `effectiveDeadline` — the same
+    college-deadline fallback used for scoring (see
+    resolve_effective_deadline's docstring for why most tasks have no
+    `deadline` of their own), so callers like Today's Priorities can show a
+    real date instead of "-" without duplicating that resolution logic
+    client-side. `Task.deadline` itself is still never overwritten in
+    Firestore.
     """
-    tasks = [task for task in ft.get_tasks(user_id) if task.status != TaskStatus.DONE]
+    all_tasks = ft.get_tasks(user_id)
+    open_tasks = [task for task in all_tasks if task.status != TaskStatus.DONE]
     colleges_by_id = {
         college.id: college for college in ft.get_tracked_colleges(user_id)
     }
-    for task in tasks:
-        college = colleges_by_id.get(task.college_id) if task.college_id else None
-        effective_deadline = resolve_effective_deadline(
-            task.deadline, college.deadlines if college else None
-        )
+
+    scored: list[tuple[Task, float, str, datetime | None]] = []
+    for task in open_tasks:
+        effective_deadline = _effective_deadline(task, colleges_by_id)
         breakdown = compute_priority_score(
             deadline=effective_deadline,
             estimated_minutes=task.estimated_minutes,
@@ -217,12 +416,31 @@ def recompute_priorities(user_id: str = Depends(require_user_id)) -> list[dict]:
             has_dependencies=bool(task.dependencies),
             category=task.category,
         )
-        ft.update_task_priority(
-            user_id, task.id, breakdown.score, breakdown.explanation_facts
+        scored.append(
+            (task, breakdown.score, breakdown.explanation_facts, effective_deadline)
         )
+    scored.sort(key=lambda item: item[1], reverse=True)
+
+    to_persist = scored[:limit] if limit is not None else scored
+    ft.batch_update_task_priorities(
+        user_id,
+        [
+            (task.id, score, explanation)
+            for task, score, explanation, _ in to_persist
+        ],
+    )
+
+    if limit is not None:
+        return [_dump_task(task, deadline) for task, score, _, deadline in to_persist]
+
+    for task, score, explanation, _ in to_persist:
+        task.priority_score = score
+        task.priority_explanation = explanation
+    done_tasks = [task for task in all_tasks if task.status == TaskStatus.DONE]
+    deadline_by_task_id = {task.id: deadline for task, _, _, deadline in scored}
     return [
-        task.model_dump(mode="json", by_alias=True) for task in ft.get_tasks(user_id)
-    ]
+        _dump_task(task, deadline_by_task_id.get(task.id)) for task in open_tasks
+    ] + [_dump_task(task, _effective_deadline(task, colleges_by_id)) for task in done_tasks]
 
 
 @router.post("/readiness/recompute")
@@ -340,15 +558,18 @@ def delete_recommendation(
 def refresh_college_logos(user_id: str = Depends(require_user_id)) -> list[dict]:
     """Re-runs just the deterministic logo lookup (app/sub_agents/
     requirements_agent.py's _fetch_college_logo — no LLM call, no
-    google_search, no college_intake_pipeline) for every already-tracked
-    college, overwriting logoUrl with whatever it finds now.
+    google_search, no college_intake_pipeline) and re-applies any pinned
+    school-color override (_KNOWN_SCHOOL_COLORS), for every already-tracked
+    college — overwriting logoUrl/schoolColors with whatever they resolve to
+    now.
 
-    Exists because the logo-picking LOGIC has changed several times without
-    any of a college's underlying research changing — college_intake_agent
-    only re-researches a college with zero Requirement docs, so a college
-    researched under an earlier version of the picker stays stuck with
-    whatever it returned back then, even after later fixes. This is the
-    "just re-run today's picker against my existing colleges" escape
+    Exists because the logo-picking LOGIC (and, now, the color overrides)
+    have changed several times without any of a college's underlying
+    research changing — college_intake_agent only re-researches a college
+    with zero Requirement docs, so a college researched under an earlier
+    version of the picker, or before a school got a color pinned, stays
+    stuck with whatever it returned back then, even after later fixes. This
+    is the "just re-run today's picker against my existing colleges" escape
     hatch — safe and free to call any time, same
     deterministic-recompute-no-LLM shape as /priorities/recompute and
     /readiness/recompute above.
@@ -358,12 +579,19 @@ def refresh_college_logos(user_id: str = Depends(require_user_id)) -> list[dict]
     # fine once the app has started (this only runs when the route is
     # actually called), but importing it at api.py's own module top level
     # would run before fast_api_app.py's load_dotenv() call.
-    from app.sub_agents.requirements_agent import _fetch_college_logo
+    from app.sub_agents.requirements_agent import (
+        _KNOWN_SCHOOL_COLORS,
+        _fetch_college_logo,
+        _known_college_key,
+    )
 
     colleges = ft.get_tracked_colleges(user_id)
     for i, college in enumerate(colleges):
         if i > 0:
             time.sleep(0.5)
+        fields: dict[str, str] = dict(
+            _KNOWN_SCHOOL_COLORS.get(_known_college_key(college.name), {})
+        )
         try:
             logo_url = _fetch_college_logo(college.name)
         except Exception:
@@ -371,9 +599,11 @@ def refresh_college_logos(user_id: str = Depends(require_user_id)) -> list[dict]
                 "Logo refresh failed for %r, leaving it unchanged", college.name,
                 exc_info=True,
             )
-            continue
+            logo_url = None
         if logo_url:
-            ft.update_college_branding(user_id, college.id, {"logoUrl": logo_url})
+            fields["logoUrl"] = logo_url
+        if fields:
+            ft.update_college_branding(user_id, college.id, fields)
     return [
         college.model_dump(mode="json", by_alias=True)
         for college in ft.get_tracked_colleges(user_id)
@@ -539,43 +769,22 @@ async def send_orchestrator_message(
     user_id: str = Depends(require_user_id),
 ) -> OrchestratorMessageResponse:
     runner = request.app.state.runner
-    session = await runner.session_service.create_session(
-        app_name=request.app.state.agent_app_name, user_id=user_id
-    )
-    # asyncio.shield, not a plain await: college_intake_pipeline runs real
-    # web research across several agents and can take a minute or two, and
-    # this endpoint's task is what a client disconnect (tab closed, page
-    # refreshed) would cancel. Local uvicorn was confirmed NOT to do this by
-    # default, but that's not guaranteed under every deployment target this
-    # app runs behind (Cloud Run's request handling and any reverse proxy in
-    # front of it are different code paths) — shield() makes the pipeline
-    # immune to that class of cancellation regardless, at zero cost: a
-    # cancelled caller still raises CancelledError here (nothing to send a
-    # departed browser anyway), but _run_orchestrator keeps running to
-    # completion in the background either way, matching the "autonomous-OK,
-    # no approval gate" research/extraction work .agents-cli-spec.md §
-    # Constraints describes.
-    try:
-        reply = await asyncio.shield(
-            _run_orchestrator(runner, user_id, session.id, body.message)
+    agent_app_name = request.app.state.agent_app_name
+
+    async def _create_session():
+        return await runner.session_service.create_session(
+            app_name=agent_app_name, user_id=user_id
         )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        # An unhandled exception partway through college_intake_pipeline
-        # (LLM output validation, a transient google_search error, ...)
-        # otherwise leaves that turn's AgentRun docs stuck in "running"
-        # forever — Agent Activity would show a pipeline that looks like
-        # it's still going when it's actually dead. Close them out as
-        # failed, with the real error, so a partial run is visible and
-        # diagnosable instead of silently vanishing.
-        logger.exception("Orchestrator pipeline failed for user %s", user_id)
-        for run in ft.get_agent_runs(user_id, pipeline_run_id=session.id):
-            if run.status == AgentRunStatus.RUNNING:
-                ft.fail_agent_run(user_id, run.id, error_message=str(exc))  # type: ignore[arg-type]
-        raise HTTPException(
-            status_code=502,
-            detail="Research hit an error partway through — some colleges may be "
-            "incomplete. Check Agent Activity for details, then try again.",
-        ) from exc
+
+    async def _run(session) -> str:
+        return await _run_orchestrator(runner, user_id, session.id, body.message)
+
+    reply = await _run_pipeline_with_auto_restart(
+        user_id,
+        _create_session,
+        _run,
+        failure_detail="Research hit an error partway through, even after "
+        "automatically retrying — some colleges may be incomplete. Check "
+        "Agent Activity for details.",
+    )
     return OrchestratorMessageResponse(reply=reply)

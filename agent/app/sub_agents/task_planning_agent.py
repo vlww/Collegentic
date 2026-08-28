@@ -109,11 +109,19 @@ class ExtractedTask(BaseModel):
         description="Must exactly match a college_id key from COLLEGES."
     )
     title: str = Field(
-        description="Short, action-oriented — e.g. 'Draft Rice supplemental essay: "
-        "Why Rice', 'Request 2 teacher recommendations for Baylor', 'Submit FAFSA "
-        "for Baylor'. Not a restatement of the requirement description."
+        description="A label, not a sentence — about 3 words: the college's short "
+        "name followed by a 1-2 word type, e.g. 'Texas A&M Main Essay', 'Georgia "
+        "Tech Personal Statement', 'Texas A&M Portfolio', 'Texas A&M Short Answer "
+        "1'. No verbs ('Draft', 'Request', 'Submit'), no colons, no restating the "
+        "requirement description — that detail belongs in `description`, not here."
     )
-    description: str | None = None
+    description: str | None = Field(
+        default=None,
+        description="One short sentence, 7 words or fewer — what the task actually "
+        "involves (e.g. 'Explain briefly why you're applying.'). Not a restatement "
+        "of the requirement, not multiple sentences. Never mention verification/"
+        "uncertainty here — the confidence badge already shows that.",
+    )
     category: str = Field(
         description="Same category as the source requirement: essay, recommendation, "
         "testing, financial_aid, portfolio, interview, or major_specific."
@@ -162,14 +170,19 @@ RULES:
   financial_aid, portfolio, interview, major_specific.
 - Do NOT generate a task for a "deadline" requirement itself — a deadline
   is context attached to other tasks, not an action on its own.
-- A requirement marked needs_verification still gets a task, but mention
-  the uncertainty in the description so the student knows to double-check
-  before treating it as settled.
+- A requirement marked needs_verification still gets a normal task — do NOT
+  mention the uncertainty in title or description; the Tasks page already
+  shows a confidence badge for that, so repeating it in the 7-word
+  description would just be redundant.
 - source_requirement_id MUST be the exact "id" field from the matching
   requirement above.
 - required: copy the source requirement's own "required" field exactly.
-- Write `title` and `description` as short, plain text: no markdown
-  formatting, no em dashes.
+- `title` is a ~3-word label — college short name + 1-2 word type (e.g.
+  "Texas A&M Main Essay", "Georgia Tech Personal Statement", "Texas A&M
+  Short Answer 1") — not a sentence. Put any action or detail in
+  `description` instead.
+- `description` is ONE short sentence, 7 words or fewer, plain text (no
+  markdown, no em dashes) — e.g. "Explain briefly why you're applying."
 
 Respond with a single raw JSON object matching the TaskPlan schema."""
 

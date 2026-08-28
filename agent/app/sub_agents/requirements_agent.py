@@ -278,6 +278,47 @@ _LOGOBRANDS_NAME_ALIASES: dict[str, str] = {
     "university of southern california": "usc",
     "university of mississippi": "ole miss",
 }
+# Schools that must never match logobrands.com at all, regardless of score —
+# not aliases (there is no correct entry to alias to; these schools simply
+# aren't SEC/ACC/Big Ten/Big 12 members, e.g. WashU is D3). Found live:
+# "Washington University in St. Louis" scored a nonzero Jaccard match
+# against the "washington washington huskies" (University of Washington)
+# entry purely because they coincidentally share the single word
+# "washington" — the only entry with ANY overlap wins even at a low score,
+# since _match_logobrands_entry has no absolute floor. Raising a global
+# score threshold doesn't cleanly fix this either: "George Washington
+# University" would tie the exact same (legitimate) score "University of
+# Texas at Austin" gets for its real match — both are single-shared-word,
+# one-extra-unmatched-word cases, structurally identical by word overlap
+# alone. Hard-excluding the specific known collision is the safe fix; a
+# correctly-excluded school still gets its real logo from the Wikipedia
+# fallback in _fetch_college_logo.
+_LOGOBRANDS_NEVER_MATCH = {
+    "washington university in st louis",
+}
+
+
+def _known_college_key(college_name: str) -> str:
+    return re.sub(r"[.,]", "", college_name.lower()).strip()
+
+
+# School colors that are pinned rather than trusted to whatever
+# college_research_agent's live google_search-grounded pass happens to
+# report. Found live: Washington University in St. Louis officially
+# recognizes BOTH red and green (its own Wikipedia infobox lists "Red and
+# green", and its own logo mark — brand.wustl.edu's CSS — literally fills
+# one path #2c5234 green and another #ba0c2f red), so which one a live LLM
+# call reports as "primary" isn't a hallucination to prompt-tune away, it's
+# genuine source ambiguity that can legitimately go either way run to run.
+# Green is the color actually associated with WashU (spirit wear, athletics,
+# the wordmark) — pin it rather than leave it to chance. Both hex values are
+# taken directly from brand.wustl.edu's own official logo CSS, not guessed.
+_KNOWN_SCHOOL_COLORS: dict[str, dict[str, str]] = {
+    "washington university in st louis": {
+        "primary": "#2C5234",
+        "secondary": "#BA0C2F",
+    },
+}
 
 
 @functools.lru_cache(maxsize=1)
@@ -350,7 +391,11 @@ def _match_logobrands_entry(college_name: str, entries: tuple[tuple[str, str], .
     scores higher against the bare "texas" entry than against "texas a&m"
     or "texas tech", each of which has an extra word the query doesn't.
     Applies `_LOGOBRANDS_NAME_ALIASES` first for the handful of schools
-    where word overlap alone can't work at all (BYU, USC, Ole Miss)."""
+    where word overlap alone can't work at all (BYU, USC, Ole Miss), and
+    refuses to match at all for `_LOGOBRANDS_NEVER_MATCH` (see its
+    docstring)."""
+    if _known_college_key(college_name) in _LOGOBRANDS_NEVER_MATCH:
+        return None
     normalized = college_name.lower()
     for full, alias in _LOGOBRANDS_NAME_ALIASES.items():
         if full in normalized:
@@ -490,16 +535,20 @@ If RAW RESEARCH FINDINGS is empty, grade "fail" with a comment saying
 research hasn't produced findings yet, rather than guessing at what's
 missing — do NOT invent follow-up queries against nonexistent findings.
 
-Grade "fail" if: a college is missing one of the required categories entirely
-(deadlines, testing, recommendations, essay prompts, portfolio, interview,
-financial aid); or there are multiple "UNCERTAIN:" markers that a more
-targeted search could likely resolve. Otherwise grade "pass" — a few
-genuinely UNCERTAIN items is expected and fine; your job is to catch gaps a
-follow-up search could plausibly fix, not to demand perfection.
+Grade "fail" ONLY if: a college is missing deadlines, testing policy, OR
+essay prompts entirely (the categories that actually drive the table and
+planned tasks) with nothing at all reported for them, not even
+"UNCERTAIN:"; or there are 3 or more "UNCERTAIN:" markers that a more
+targeted search could likely resolve. Otherwise grade "pass" — bias toward
+"pass": a few genuinely UNCERTAIN items, or a gap in a less-critical
+category (portfolio, interview, financial aid) is expected and fine. This
+is being watched live, so only ask for a follow-up round when it would fix
+something that actually matters, not to chase completeness for its own
+sake.
 
-If "fail", write 5-7 specific follow-up search queries targeting exactly the
+If "fail", write 3-4 specific follow-up search queries targeting exactly the
 missing/unclear items (e.g. "Rice University supplemental essay prompts
-2026-2027" rather than a generic re-search).
+2026-2027" rather than a generic re-search) — few and sharp, not exhaustive.
 
 Respond with a single raw JSON object matching the Feedback schema.""",
     output_schema=Feedback,
@@ -597,7 +646,10 @@ class ExtractedRequirement(BaseModel):
     )
     description: str = Field(
         description="A specific, concrete description — e.g. the exact essay prompt "
-        "text, or 'Regular Decision deadline: January 5'."
+        "text, or 'Regular Decision deadline: January 5'. If a word count is "
+        "involved, state ONLY the actual limit (e.g. '650 words maximum') — drop "
+        "any 'X-Y words recommended' range some schools also publish, that's "
+        "noise on top of the real limit, not part of it."
     )
     required: bool = True
     deadline_iso: str | None = Field(
@@ -685,10 +737,18 @@ For every requirement:
 - confidence: "high" only if a source directly and unambiguously stated
   this; "medium" if inferred/implied; "low" if the findings marked it
   UNCERTAIN or you are extrapolating.
-- needs_verification: true if the findings marked this UNCERTAIN or the
-  information seems outdated or contradicted elsewhere in the findings.
-- source_short_ids: the src-N ids whose supported_claims text overlaps with
-  this specific requirement. Use [] rather than guessing a source.
+- needs_verification: true ONLY if the findings explicitly marked this
+  UNCERTAIN, or two sources directly and specifically contradict each other
+  on this exact fact. Do not set it just because a fact feels ordinary,
+  slightly dated, or unremarkable — an unremarkable fact stated plainly by
+  a source is NOT uncertain. Most requirements should be false here.
+- source_short_ids: every src-N id from AVAILABLE SOURCES that's plausibly
+  about the same college and topic as this requirement, even if its
+  supported_claims text doesn't quote this exact detail word-for-word — a
+  source about "MIT admissions deadlines" backs a specific MIT deadline
+  requirement even if the claims text paraphrased it. Use [] only when
+  truly nothing in AVAILABLE SOURCES relates to this requirement at all,
+  not merely because the wording doesn't match closely.
 - deadline_kind: for type="deadline" items only, classify which deadline it
   is (EA/ED/RD/financial_aid) whenever you can tell — this is what powers
   the dashboard's per-college deadline columns. Leave null if ambiguous
@@ -736,14 +796,19 @@ def _persist_requirements_and_sources(callback_context) -> None:
     unhandled exception anywhere in here used to fail the entire Requirements
     Agent run, discarding every college's already-extracted data in the same
     batch and aborting every pipeline stage after it (conflict detection,
-    task planning, readiness); (2) branding (Stage 1) and deadlines (Stage 3)
-    are written per-college with a deliberate pause between colleges, so a
-    student watching the Colleges table (which polls Firestore while
-    research is running — see Colleges.tsx) sees each college's color, logo,
-    and dates land individually as they're found, instead of the whole
-    batch jumping from placeholder to fully populated in one silent poll
-    tick. Detailed Requirement docs (essay prompts, recommendation counts,
-    etc.) are the least visually interesting of the three and are saved
+    task planning, readiness); (2) school color (Stage 1), logo (Stage 2),
+    and deadlines (Stage 4) are each their own pass, written per-college with
+    a deliberate pause between colleges, so a student watching the Colleges
+    table (which polls Firestore while research is running — see
+    Colleges.tsx) sees each college's row color, logo, and dates land
+    individually as they're found — genuinely as separate discoveries, not
+    bundled into one write, since color is already known the instant this
+    callback runs (extracted right alongside the requirements themselves)
+    while the logo needs its own slower deterministic lookup (network calls
+    to logobrands.com/Wikipedia, see _fetch_college_logo) — rather than the
+    whole batch jumping from placeholder to fully populated in one silent
+    poll tick. Detailed Requirement docs (essay prompts, recommendation
+    counts, etc.) are the least visually interesting of these and are saved
     last, in one batch, with no pacing.
     """
     user_id = callback_context.user_id
@@ -757,22 +822,28 @@ def _persist_requirements_and_sources(callback_context) -> None:
         log_agent_run_complete(callback_context, "No requirements extracted.")
         return
 
-    # --- Stage 1: school color + logo, one college at a time --------------
     branding_by_name: dict[str, dict] = {}
     for entry in extraction.get("branding", []):
         name = entry.get("college_name")
         if name:
             branding_by_name[name] = entry
 
-    # Union, not just new_college_names: a college the LLM reported branding
-    # for should still get it even if state's new_college_names is somehow
-    # unavailable, and vice versa — logo lookup below is fully deterministic
-    # and worth attempting for every newly-researched college regardless of
-    # whether the LLM separately found a color/logo to mention in `branding`.
-    for i, college_name in enumerate({*new_college_names, *branding_by_name}):
-        college_id = name_to_id.get(college_name)
-        if not college_id:
-            continue
+    # This callback always covers exactly one college (see
+    # PerCollegeResearchAndExtraction in orchestrator_agent.py, which scopes
+    # new_college_names down to a single name before invoking
+    # requirements_pipeline) — college_id is the one loading-spinner target
+    # every stage below advances through, in order: "logo" (already set by
+    # start_college_research before this run even started) -> "ea" -> "ed"
+    # -> "rd" -> "financialAid" -> "requirements".
+    college_name = new_college_names[0] if new_college_names else None
+    college_id = name_to_id.get(college_name) if college_name else None
+
+    # --- Stage 1: school color — already fully known the moment we're
+    # here (it came back in the same structured extraction as the
+    # requirements, no lookup needed), so it's applied silently while the
+    # loading spinner on the logo cell (Stage 2, the actually slow part) is
+    # still showing, rather than getting a spinner cell of its own. -------
+    if college_id:
         entry = branding_by_name.get(college_name, {})
         fields: dict[str, str] = {}
         primary = entry.get("primary_color_hex")
@@ -781,16 +852,25 @@ def _persist_requirements_and_sources(callback_context) -> None:
         secondary = entry.get("secondary_color_hex")
         if secondary and _HEX_COLOR_RE.match(secondary):
             fields["secondary"] = secondary
+        # Pinned override wins over whatever this run's research found —
+        # see _KNOWN_SCHOOL_COLORS's docstring. Applied even if the LLM
+        # reported no color at all for this college.
+        fields.update(_KNOWN_SCHOOL_COLORS.get(_known_college_key(college_name), {}))
+        if fields:
+            try:
+                ft.update_college_branding(user_id, college_id, fields)
+            except Exception:
+                logger.warning(
+                    "Failed to save school colors for %r, continuing", college_name,
+                    exc_info=True,
+                )
 
-        if i > 0:
-            # Paces our own request rate rather than only reacting after
-            # Wikimedia's rate limiter has already kicked in — found live:
-            # looking up 6+ colleges' logos back-to-back with zero spacing
-            # started tripping it partway through, independent of the retry
-            # logic below (which handles genuine one-off transient errors).
-            # Also, conveniently, exactly the pacing Stage 1's per-college
-            # reveal wants.
-            time.sleep(0.5)
+        # --- Stage 2: logo — the genuinely slow part (a real network
+        # lookup, logobrands.com and/or Wikipedia, with its own retry/
+        # backoff), which is exactly why its loading spinner (research_
+        # stage == "logo", set before this whole college's research began)
+        # has been showing this whole time rather than only appearing now. -
+        entry = branding_by_name.get(college_name, {})
         try:
             logo_url = _fetch_college_logo(college_name)
             if not logo_url:
@@ -808,20 +888,28 @@ def _persist_requirements_and_sources(callback_context) -> None:
             )
             logo_url = None
         if logo_url:
-            fields["logoUrl"] = logo_url
-
-        if fields:
             try:
-                ft.update_college_branding(user_id, college_id, fields)
+                ft.update_college_branding(user_id, college_id, {"logoUrl": logo_url})
             except Exception:
                 logger.warning(
-                    "Failed to save branding for %r, continuing", college_name,
+                    "Failed to save logo for %r, continuing", college_name,
                     exc_info=True,
                 )
+        # Advance the spinner to the first deadline field regardless of
+        # whether a logo was actually found — "found, or determined there
+        # isn't one" is still a resolved state for that cell, not a reason
+        # to keep spinning.
+        try:
+            ft.advance_research_stage(user_id, college_id, "ea")
+        except Exception:
+            logger.warning(
+                "Failed to advance research stage past logo for %r", college_name,
+                exc_info=True,
+            )
 
-    # --- Stage 2: structure every requirement, collecting deadlines and
+    # --- Stage 3: structure every requirement, collecting deadlines and
     # ResearchSource docs along the way — nothing written to College or
-    # Requirement docs yet, just building the lists Stages 3-4 write. ------
+    # Requirement docs yet, just building the lists Stages 4-5 write. ------
     source_doc_id_cache: dict[
         tuple[str, str], str
     ] = {}  # (short_id, college_id) -> doc id
@@ -898,10 +986,21 @@ def _persist_requirements_and_sources(callback_context) -> None:
             # the LLM occasionally emits an item with an empty
             # source_short_ids AND needs_verification=False in the same
             # breath (self-inconsistent), which the instruction alone
-            # doesn't prevent. A missing source always means
-            # needs_verification, regardless of what the LLM said.
-            needs_verification = (
-                item.get("needs_verification", False) or not resolved_source_ids
+            # doesn't prevent.
+            #
+            # Only forced for medium/low confidence, though — a missing
+            # citation is genuinely the risky combination when the LLM
+            # itself is also unsure, but a HIGH-confidence claim (a source
+            # directly and unambiguously stated it, per the confidence
+            # field's own definition below) shouldn't get flagged just
+            # because short_id text-overlap matching happened to miss it.
+            # Found live: over-eager here was flooding the table with
+            # "needs verification" badges on requirements the research
+            # genuinely nailed, which trained a judge to ignore the badge
+            # rather than trust it on the requirements that actually
+            # warrant a second look.
+            needs_verification = item.get("needs_verification", False) or (
+                not resolved_source_ids and item.get("confidence") != "high"
             )
 
             requirements.append(
@@ -928,32 +1027,82 @@ def _persist_requirements_and_sources(callback_context) -> None:
                 exc_info=True,
             )
 
-    # --- Stage 3: deadlines, one college at a time — the second-fastest,
-    # most visually obvious research signal after branding. -------------
-    for i, (college_id, fields) in enumerate(deadlines_by_college.items()):
-        if i > 0:
-            # Purely cosmetic pacing (unlike Stage 1's, this isn't working
-            # around any rate limit) — Firestore writes are near-instant, so
-            # without a deliberate pause every college's deadlines would
-            # land within the same poll tick and look like one batch update
-            # rather than each college being individually found.
-            time.sleep(0.4)
+    # --- Stage 4: deadlines, ONE FIELD AT A TIME — EA, then ED, then RD,
+    # then financial aid. The loading spinner (research_stage) sits on
+    # exactly one of these at a time, advancing to the next only once the
+    # current one is written (found) or confirmed there's nothing to write
+    # (not found) — either way that cell is resolved and the spinner moves
+    # on, rather than every still-empty deadline cell spinning together. --
+    _DEADLINE_FIELD_ORDER = ("ea", "ed", "rd", "financialAid")
+    _NEXT_STAGE_AFTER_DEADLINE = {
+        "ea": "ed",
+        "ed": "rd",
+        "rd": "financialAid",
+        "financialAid": "requirements",
+    }
+    college_deadlines = deadlines_by_college.get(college_id, {}) if college_id else {}
+    for field in _DEADLINE_FIELD_ORDER:
+        if not college_id:
+            break
+        if field in college_deadlines:
+            try:
+                ft.update_college_deadlines(
+                    user_id, college_id, {field: college_deadlines[field]}
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to save %s deadline for college %r, continuing",
+                    field, college_id, exc_info=True,
+                )
+        # Short, deliberate pause before revealing this field resolved —
+        # long enough for the frontend's poll to actually catch this cell's
+        # spinner before it moves to the next one, short enough that four
+        # of these barely register against a multi-minute research run.
+        time.sleep(0.6)
         try:
-            ft.update_college_deadlines(user_id, college_id, fields)
+            ft.advance_research_stage(user_id, college_id, _NEXT_STAGE_AFTER_DEADLINE[field])
         except Exception:
             logger.warning(
-                "Failed to save deadlines for college %r, continuing", college_id,
-                exc_info=True,
+                "Failed to advance research stage past %s for %r",
+                field, college_name, exc_info=True,
             )
 
-    # --- Stage 4: the full requirement docs — essay prompts, recommendation
-    # counts, etc., the detail behind the table's "N tracked" count, not
-    # itself a highlight worth pacing out. One batch, saved last. ----------
-    if requirements:
+    # --- Stage 5: the full requirement docs — essay prompts, recommendation
+    # counts, etc., behind the table's "N tracked" count and (via
+    # readiness_agent.py, which runs after this pipeline) its Readiness
+    # column. Saved in small paced chunks, not one flat write, with
+    # `requirements_total` set first — this is what lets the frontend show
+    # a requirements-saved-so-far progress bar (see College.
+    # requirements_total) instead of the count silently jumping from 0 to
+    # its final value. -------------------------------------------------
+    requirements_by_college: dict[str, list[Requirement]] = {}
+    for req in requirements:
+        requirements_by_college.setdefault(req.college_id, []).append(req)
+    for college_id, college_requirements in requirements_by_college.items():
         try:
-            ft.save_requirements(user_id, requirements)
+            ft.set_requirements_total(user_id, college_id, len(college_requirements))
         except Exception:
-            logger.warning("Failed to save requirements batch", exc_info=True)
+            logger.warning(
+                "Failed to set requirements_total for college %r, continuing",
+                college_id, exc_info=True,
+            )
+        # A fixed ~6 visible steps regardless of how many requirements this
+        # college has, rather than one write per requirement (which could
+        # be dozens of extra Firestore round trips) or one flat write (no
+        # progress bar to show at all).
+        chunk_size = max(1, -(-len(college_requirements) // 6))  # ceil division
+        for i in range(0, len(college_requirements), chunk_size):
+            if i > 0:
+                time.sleep(0.3)
+            try:
+                ft.save_requirements(
+                    user_id, college_requirements[i : i + chunk_size]
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to save requirements for college %r, continuing",
+                    college_id, exc_info=True,
+                )
 
     if skipped_colleges:
         logger.warning(

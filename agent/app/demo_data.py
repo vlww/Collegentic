@@ -84,16 +84,45 @@ def _days(now: datetime, n: int) -> datetime:
     return now + timedelta(days=n)
 
 
-def _truncate(text: str, max_len: int) -> str:
-    """Truncates at a word boundary with an ellipsis rather than a hard
-    mid-word cut — found live while auditing task titles on the Dashboard/
-    Tasks/Priorities pages (Milestone 16): a plain `text[:max_len]` produced
-    titles like "...one from a STEM class, one from" and "...policy has
-    shifted ye", which read as broken rather than intentionally shortened."""
-    if len(text) <= max_len:
-        return text
-    truncated = text[:max_len].rsplit(" ", 1)[0]
-    return f"{truncated}…"
+_SHORT_COLLEGE_NAME = {
+    "MIT": "MIT",
+    "Princeton University": "Princeton",
+    "Stanford University": "Stanford",
+    "Rice University": "Rice",
+    "University of Texas at Austin": "UT Austin",
+    "Harvard University": "Harvard",
+}
+
+# Fallback 2-word "what it is" label for a requirement type, used only when
+# a requirement dict doesn't set its own `short_label` — every essay/
+# portfolio requirement below sets one (there's real variety worth naming:
+# "Personal Statement" vs "Roommate Letter"), but recommendation/testing/
+# financial_aid are the same shape everywhere a college requires them, so
+# one label each covers them all.
+_TYPE_DEFAULT_LABEL = {
+    "essay": "Supplemental Essay",
+    "recommendation": "Recommendation Letters",
+    "testing": "Testing Policy",
+    "financial_aid": "Financial Aid",
+    "portfolio": "Arts Portfolio",
+    "interview": "Interview Prep",
+    "major_specific": "Major Requirement",
+}
+
+# Same fallback role as _TYPE_DEFAULT_LABEL, one level down: a ~7-word
+# sentence for a requirement dict that doesn't set its own
+# `task_description` — matches the cap task_planning_agent.py's
+# ExtractedTask.description now enforces for real tasks, so demo and live
+# data read the same way on the Tasks page.
+_TYPE_DEFAULT_DESCRIPTION = {
+    "essay": "Draft and polish this supplemental essay.",
+    "recommendation": "Line up your teacher recommendation letters.",
+    "testing": "Confirm this college's current testing policy.",
+    "financial_aid": "Submit the required financial aid forms.",
+    "portfolio": "Prepare and submit your arts portfolio.",
+    "interview": "Prepare for your admissions interview.",
+    "major_specific": "Complete this major-specific requirement.",
+}
 
 
 def _college_spec(now: datetime) -> list[dict]:
@@ -112,6 +141,8 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Personal Statement (Common App): tell your story.",
+                    "short_label": "Personal Statement",
+                    "task_description": "Share your personal story in your voice.",
                     "status": RequirementStatus.NEARLY_COMPLETE,
                     "completion_percentage": 85,
                     "match_material": 0,
@@ -122,12 +153,16 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Why MIT: what do you hope to explore? (250-word limit)",
+                    "short_label": "Exploration Essay",
+                    "task_description": "Explain what draws you to MIT.",
                     "status": RequirementStatus.IN_PROGRESS,
                     "completion_percentage": 40,
                 },
                 {
                     "type": "essay",
                     "description": "Describe the world you come from. (250-word limit)",
+                    "short_label": "Background Essay",
+                    "task_description": "Describe the world and community you're from.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                 },
@@ -135,6 +170,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "type": "recommendation",
                     "description": "2 letters: one from a math/science teacher, one from a "
                     "humanities teacher.",
+                    "task_description": "Ask a STEM and a humanities teacher.",
                     "status": RequirementStatus.PLANNING,
                     "completion_percentage": 15,
                     "recommendation_count": 2,
@@ -143,6 +179,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "type": "testing",
                     "description": "SAT/ACT test-optional for this cycle, policy has shifted "
                     "year to year, worth confirming before relying on it.",
+                    "task_description": "Confirm SAT or ACT scores are required.",
                     "required": False,
                     "status": RequirementStatus.NOT_STARTED,
                     "confidence": ConfidenceLevel.LOW,
@@ -152,6 +189,7 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "portfolio",
                     "description": "Optional portfolio for arts/design applicants.",
+                    "task_description": "Submit an optional portfolio for arts applicants.",
                     "required": False,
                     "status": RequirementStatus.NOT_STARTED,
                 },
@@ -166,12 +204,16 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Your Voice: Princeton essay on your community. (250-word limit)",
+                    "short_label": "Community Essay",
+                    "task_description": "Describe your community in Princeton's voice prompt.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                 },
                 {
                     "type": "essay",
                     "description": "Extracurricular activity essay. (150-word limit)",
+                    "short_label": "Activity Essay",
+                    "task_description": "Describe one extracurricular activity in detail.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                 },
@@ -179,6 +221,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "type": "recommendation",
                     "description": "2 teacher recommendations, one from a STEM class, one from "
                     "humanities or social science.",
+                    "task_description": "Get one STEM and one humanities recommendation.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                     "recommendation_count": 2,
@@ -186,6 +229,7 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "financial_aid",
                     "description": "CSS Profile due with application.",
+                    "task_description": "Submit the CSS Profile with your application.",
                     "status": RequirementStatus.NOT_STARTED,
                 },
             ],
@@ -199,12 +243,16 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Short essay: what matters to you, and why? (250-word limit)",
+                    "short_label": "Values Essay",
+                    "task_description": "Explain briefly what matters most to you.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                 },
                 {
                     "type": "essay",
                     "description": "Roommate letter. (250-word limit)",
+                    "short_label": "Roommate Letter",
+                    "task_description": "Write a short letter to your roommate.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                 },
@@ -212,6 +260,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "type": "recommendation",
                     "description": "One recommendation from a core academic subject teacher, "
                     "plus one from your counselor.",
+                    "task_description": "Get a teacher and counselor recommendation.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                     "recommendation_count": 2,
@@ -227,6 +276,8 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Why Rice? (150-word limit)",
+                    "short_label": "Interest Essay",
+                    "task_description": "Explain briefly why you're applying to Rice.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                 },
@@ -234,6 +285,8 @@ def _college_spec(now: datetime) -> list[dict]:
                     "type": "essay",
                     "description": "Community essay: describe a community you belong to. "
                     "(500-word limit)",
+                    "short_label": "Community Essay",
+                    "task_description": "Describe a community and your role.",
                     "status": RequirementStatus.IN_PROGRESS,
                     "completion_percentage": 45,
                     "match_material": 1,
@@ -244,12 +297,15 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "The Rice Box (optional creative supplement).",
+                    "short_label": "Creative Supplement",
+                    "task_description": "Complete Rice's optional creative supplement prompt.",
                     "required": False,
                     "status": RequirementStatus.NOT_STARTED,
                 },
                 {
                     "type": "recommendation",
                     "description": "1 counselor recommendation + 2 academic teacher evaluations.",
+                    "task_description": "Line up counselor and two teacher recommendations.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                     "recommendation_count": 3,
@@ -268,6 +324,8 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Common App or ApplyTexas personal essay.",
+                    "short_label": "Personal Essay",
+                    "task_description": "Write your Common App or ApplyTexas essay.",
                     "status": RequirementStatus.NEARLY_COMPLETE,
                     "completion_percentage": 85,
                     "match_material": 0,
@@ -278,6 +336,8 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Short answer: why your intended major? (250-word limit)",
+                    "short_label": "Short Answer",
+                    "task_description": "Explain why you chose your intended major.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                 },
@@ -295,6 +355,8 @@ def _college_spec(now: datetime) -> list[dict]:
                 {
                     "type": "essay",
                     "description": "Why do you want to attend Harvard? (optional)",
+                    "short_label": "Interest Essay",
+                    "task_description": "Optional: explain your interest in Harvard.",
                     "required": False,
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
@@ -303,6 +365,8 @@ def _college_spec(now: datetime) -> list[dict]:
                     "type": "essay",
                     "description": "Optional: describe a community you belong to and your role "
                     "in it.",
+                    "short_label": "Community Essay",
+                    "task_description": "Optional: describe your community and role.",
                     "required": False,
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
@@ -315,6 +379,7 @@ def _college_spec(now: datetime) -> list[dict]:
                     "type": "recommendation",
                     "description": "2 teacher recommendations, ideally from different academic "
                     "areas.",
+                    "task_description": "Get two teacher recommendations from different areas.",
                     "status": RequirementStatus.NOT_STARTED,
                     "completion_percentage": 0,
                     "recommendation_count": 2,
@@ -427,8 +492,10 @@ def seed_demo_data(user_id: str) -> None:
 
     college_ids: dict[str, str] = {}
     all_requirements: list[Requirement] = []
+    short_label_by_requirement_id: dict[str, str] = {}
+    task_description_by_requirement_id: dict[str, str] = {}
     college_specs = _college_spec(now)
-    for spec in college_specs:
+    for i, spec in enumerate(college_specs):
         college_id = ft.save_college(
             user_id,
             College(
@@ -436,6 +503,10 @@ def seed_demo_data(user_id: str) -> None:
                 deadlines=spec["deadlines"],
                 school_colors=spec["school_colors"],
                 logo_url=spec.get("logo_url"),
+                # get_tracked_colleges sorts by created_at — this keeps the
+                # demo's Colleges table in the same order college_specs
+                # lists them, instead of an arbitrary Firestore read order.
+                created_at=now - timedelta(seconds=len(college_specs) - i),
             ),
         )
         college_ids[spec["name"]] = college_id
@@ -508,8 +579,14 @@ def seed_demo_data(user_id: str) -> None:
             )
             college_requirements.append(requirement)
         req_ids = ft.save_requirements(user_id, college_requirements)
-        for requirement, req_id in zip(college_requirements, req_ids, strict=True):
+        for req_spec, requirement, req_id in zip(
+            spec["requirements"], college_requirements, req_ids, strict=True
+        ):
             requirement.id = req_id
+            if "short_label" in req_spec:
+                short_label_by_requirement_id[req_id] = req_spec["short_label"]
+            if "task_description" in req_spec:
+                task_description_by_requirement_id[req_id] = req_spec["task_description"]
         all_requirements.extend(college_requirements)
 
         # Essay prompts for EVERY essay-type requirement (matching the real
@@ -646,10 +723,17 @@ def seed_demo_data(user_id: str) -> None:
             if requirement.completion_percentage > 0
             else TaskStatus.NOT_STARTED
         )
+        short_college_name = _SHORT_COLLEGE_NAME.get(college["name"], college["name"])
+        short_label = short_label_by_requirement_id.get(
+            requirement.id, _TYPE_DEFAULT_LABEL[requirement.type]
+        )
+        task_description = task_description_by_requirement_id.get(
+            requirement.id, _TYPE_DEFAULT_DESCRIPTION[requirement.type]
+        )
         tasks.append(
             Task(
-                title=f"{requirement.type.replace('_', ' ').title()}: "
-                f"{_truncate(requirement.description, 60)}",
+                title=f"{short_college_name} {short_label}",
+                description=task_description,
                 college_id=requirement.college_id,
                 category=requirement.type,
                 deadline=deadline,

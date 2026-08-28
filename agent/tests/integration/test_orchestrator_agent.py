@@ -56,6 +56,7 @@ def user_id():
     ):
         for doc in coll_fn(uid).stream():
             doc.reference.delete()
+    ft._pipeline_progress_doc(uid).delete()
 
 
 def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(

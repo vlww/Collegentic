@@ -1,37 +1,55 @@
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { AddCollegeForm } from "@/components/collegentic/AddCollegeForm";
 import { CollegeTable } from "@/components/collegentic/CollegeTable";
+import { ResearchProgressBar } from "@/components/collegentic/ResearchProgressBar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   deleteCollege,
   getAgentRuns,
   getColleges,
+  getPipelineProgress,
   getRequirements,
   refreshCollegeLogos,
   sendOrchestratorMessage,
 } from "@/lib/api";
 import { latestPipelineStatus } from "@/lib/agentRuns";
-import type { College, Requirement } from "@/lib/types";
+import type { College, PipelineProgress, Requirement } from "@/lib/types";
 
-// Faster than Agent Activity's 3s poll: the backend now deliberately paces
-// its Firestore writes per-college (~0.4-0.5s apart — see
-// requirements_agent.py's staged persistence) specifically so a student
-// watching this table sees each college's color, logo, and deadlines land
-// one at a time. A slower poll here would flatten several colleges' worth
-// of individually-timed writes into one visible jump per tick.
-const POLL_INTERVAL_MS = 1200;
+// The backend paces its Firestore writes per-college and per-field (color,
+// then logo, then each deadline individually — see requirements_agent.py's
+// staged persistence) specifically so a student watching this table sees
+// each value land one at a time. Polls fast enough to catch that without
+// flattening several fields' worth of individually-timed writes into one
+// visible jump per tick — also just genuinely snappier for a judge
+// watching a live demo.
+const POLL_INTERVAL_MS = 700;
 
 export function Colleges() {
   const [colleges, setColleges] = useState<College[] | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [error, setError] = useState(false);
   const [researching, setResearching] = useState(false);
+  const [progress, setProgress] = useState<PipelineProgress | null>(null);
   const [pipelineFailed, setPipelineFailed] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
+  // Shown in place of the progress bar right after a run finishes — a
+  // one-line green confirmation instead of the Orchestrator's own
+  // paragraph-long plain-language reply (AddCollegeForm no longer renders
+  // that at all; it read as long and out of place next to a live-updating
+  // table that already shows the result). Auto-clears after a few seconds
+  // and immediately on the next submission.
+  const [justCompleted, setJustCompleted] = useState(false);
+  const justCompletedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function announceCompletion() {
+    setJustCompleted(true);
+    if (justCompletedTimeout.current) clearTimeout(justCompletedTimeout.current);
+    justCompletedTimeout.current = setTimeout(() => setJustCompleted(false), 6000);
+  }
 
   const load = useCallback(() => {
     getColleges()
@@ -40,6 +58,9 @@ export function Colleges() {
         setRequirements(result.length > 0 ? await getRequirements(result.map((c) => c.id)) : []);
       })
       .catch(() => setError(true));
+    getPipelineProgress()
+      .then(setProgress)
+      .catch(() => {});
   }, []);
 
   // Drives the Resume Research button — hidden whenever the most recent
@@ -56,6 +77,12 @@ export function Colleges() {
     load();
     checkPipelineStatus();
   }, [load, checkPipelineStatus]);
+
+  useEffect(() => {
+    return () => {
+      if (justCompletedTimeout.current) clearTimeout(justCompletedTimeout.current);
+    };
+  }, []);
 
   // While a "research and add" submission is running, the orchestrator
   // pipeline is writing colleges/deadlines/requirements/branding to
@@ -91,6 +118,7 @@ export function Colleges() {
       );
       load();
       checkPipelineStatus();
+      announceCompletion();
     } catch (err) {
       setResumeError(
         err instanceof Error && err.message
@@ -116,6 +144,7 @@ export function Colleges() {
     }
     load();
     checkPipelineStatus();
+    announceCompletion();
   }
 
   async function handleDelete(collegeId: string) {
@@ -130,7 +159,23 @@ export function Colleges() {
         description="Every school you're tracking, with application type, deadlines, and school colors."
       />
 
-      <AddCollegeForm onDone={handleResearchDone} onLoadingChange={setResearching} />
+      <AddCollegeForm
+        onDone={handleResearchDone}
+        onLoadingChange={(loading) => {
+          setResearching(loading);
+          if (loading) setJustCompleted(false);
+        }}
+      />
+
+      {researching && progress && <ResearchProgressBar progress={progress} />}
+      {!researching && justCompleted && (
+        <Card className="border-success/40">
+          <CardContent className="flex items-center gap-2 py-4 text-sm font-medium text-success">
+            <CheckCircle2 className="h-4 w-4" />
+            Research completed
+          </CardContent>
+        </Card>
+      )}
 
       {pipelineFailed && (
         <Card className="border-warning/40">
@@ -177,7 +222,6 @@ export function Colleges() {
         <CollegeTable
           colleges={colleges}
           requirementsByCollege={requirementsByCollege}
-          researching={researching}
           onDelete={handleDelete}
         />
       )}

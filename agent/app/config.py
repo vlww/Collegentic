@@ -30,8 +30,23 @@ class AppConfig:
     critic_model: str = "gemini-3.6-flash"
     # Requirements confidence-refinement loop (Milestone 4) — bounded lower
     # than deep-search's default of 5, since our per-college research scope
-    # is narrower. See .agents-cli-spec.md § Constraints.
-    max_research_confidence_iterations: int = 2
+    # is narrower. See .agents-cli-spec.md § Constraints. Lowered from 2 to
+    # 1 (each iteration is a full extra evaluate + real google_search
+    # follow-up round, per college): with the per-college research loop
+    # (orchestrator_agent.py's PerCollegeResearchAndExtraction) now running
+    # college_research_agent sequentially per college rather than once for
+    # every college together, every extra confidence-loop iteration is
+    # multiplied by the college count instead of paid once — this was the
+    # single biggest lever on total wall-clock time for a demo a judge is
+    # watching live. requirements_agent.py's findings_evaluator "fail" bar
+    # was also loosened so the one remaining iteration triggers less often.
+    max_research_confidence_iterations: int = 1
+    # How many times a full agent pipeline run (Orchestrator, task replan)
+    # is attempted, end to end, before giving up — 2 means "try once, and
+    # if any agent in the chain raises, automatically restart the whole
+    # pipeline from scratch exactly once more" before surfacing an error.
+    # See api.py's _run_pipeline_with_auto_restart.
+    max_pipeline_attempts: int = 2
 
 
 config = AppConfig()
