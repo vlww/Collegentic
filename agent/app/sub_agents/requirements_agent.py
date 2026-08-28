@@ -634,54 +634,41 @@ requirements_confidence_loop = LoopAgent(
 )
 
 
-# --- Stage 2: structure findings into Requirement + ResearchSource docs -----
+# --- Stage 2: quick branding + deadlines pass --------------------------------
+#
+# Its own small, fast structured-output call — deliberately BEFORE Stage 3's
+# much slower full requirements extraction, not just a persist step run after
+# it. Found live: with a single big extraction call producing branding, logo,
+# deadlines, AND every detailed requirement all at once, everything the
+# Colleges table shows was already fully known in memory well before any of
+# it got written to Firestore — the per-field persistence pacing downstream
+# was real, but it only staggered writes for data that had ALREADY been
+# sitting there the whole time college_research_agent's (much longer) web
+# research was running. A student watching the table saw one long blank
+# "loading" stretch, then everything reveal in a quick burst at the very end.
+# Splitting color/logo/deadlines into their own small extraction (a much
+# smaller schema than the full requirements list, and thus a genuinely faster
+# LLM call) means the table starts filling in as SOON as this call returns —
+# still well before Stage 3's slower, more detailed pass over the same
+# findings has even started — so the reveal tracks real work actually
+# finishing, not just writes to an already-complete dataset.
 
 
-class ExtractedRequirement(BaseModel):
+class ExtractedDeadline(BaseModel):
     college_name: str = Field(
         description="Must exactly match a college name/header from the findings."
     )
-    type: str = Field(
-        description="Short category: essay, recommendation, testing, deadline, "
-        "financial_aid, portfolio, interview, or major_specific."
+    kind: Literal["EA", "ED", "RD", "financial_aid"] = Field(
+        description="Which deadline this is — Early Action, Early Decision, Regular "
+        "Decision, or a financial aid deadline (CSS Profile/FAFSA priority date)."
     )
-    description: str = Field(
-        description="A specific, concrete description — e.g. the exact essay prompt "
-        "text, or 'Regular Decision deadline: January 5'. If a word count is "
-        "involved, state ONLY the actual limit (e.g. '650 words maximum') — drop "
-        "any 'X-Y words recommended' range some schools also publish, that's "
-        "noise on top of the real limit, not part of it."
-    )
-    required: bool = True
-    deadline_iso: str | None = Field(
-        default=None, description="ISO 8601 date (YYYY-MM-DD) if found, else null."
-    )
-    deadline_kind: Literal["EA", "ED", "RD", "financial_aid"] | None = Field(
-        default=None,
-        description="Set ONLY when type='deadline': which deadline this is — Early "
-        "Action, Early Decision, Regular Decision, or a financial aid deadline "
-        "(CSS Profile/FAFSA priority date). Null for every other requirement type, "
-        "and null for a deadline type you can't confidently classify into one of these.",
-    )
-    recommendation_count: int | None = Field(
-        default=None,
-        description="Set ONLY when type='recommendation': the TOTAL number of "
-        "individual letters this requirement covers, resolved to one whole number — "
-        "e.g. '2 teacher recommendations' is 2; '1 counselor + 2 teacher letters' "
-        "is 3 (sum across recommender types). Don't just count how many times a "
-        "numeral appears — a school restating the same total in different words "
-        "('2 teacher recommendations, one from a STEM class, one from humanities') "
-        "is still 2, not 2+1+1. Default to 1 if the findings don't state a number. "
-        "Null for every other requirement type.",
-    )
-    category: str | None = None
-    confidence: Literal["high", "medium", "low"]
-    needs_verification: bool = Field(
-        description="True if the findings marked this UNCERTAIN or it seems outdated/contradictory."
-    )
-    source_short_ids: list[str] = Field(
-        default_factory=list,
-        description="src-N ids from AVAILABLE SOURCES that support this specific requirement.",
+    deadline_iso: str = Field(
+        description="ISO 8601 date (YYYY-MM-DD). College deadline pages very often "
+        "state a deadline as a bare month/day ('November 1') with no year, "
+        "implicitly meaning the current or upcoming application cycle — INFER the "
+        "correct year from today's date (this cycle's year if that month/day "
+        "hasn't passed yet, otherwise next year's) and fill in the full date; this "
+        "is resolving an obvious implicit detail, not inventing a fact."
     )
 
 
@@ -709,13 +696,267 @@ class ExtractedBranding(BaseModel):
     )
 
 
-class RequirementsExtraction(BaseModel):
-    requirements: list[ExtractedRequirement]
+class BrandingAndDeadlinesExtraction(BaseModel):
     branding: list[ExtractedBranding] = Field(
         default_factory=list,
         description="One entry per college whose findings mentioned a brand "
         "color or logo filename. Omit a college entirely rather than guessing.",
     )
+    deadlines: list[ExtractedDeadline] = Field(
+        default_factory=list,
+        description="One entry per application deadline the findings state. Skip "
+        "a deadline you can't confidently classify into one of the four kinds, or "
+        "whose date is missing/unclear — do not guess.",
+    )
+
+
+_BRANDING_AND_DEADLINES_INSTRUCTION = f"""You are extracting two specific,
+easy-to-check things from college research findings — a FAST first pass, NOT
+the full requirements list (a separate, slower step handles that afterward).
+
+RAW RESEARCH FINDINGS:
+{{raw_research_findings}}
+
+Today's date is {datetime.date.today().isoformat()}.
+
+1. BRANDING: for each college whose findings state a brand color (hex) or a
+   Wikimedia Commons logo filename, add one entry to `branding`. Copy the hex
+   code and filename exactly as given — never normalize, guess, or invent one
+   that wasn't explicitly in the findings. Skip a college entirely (don't add
+   an all-null entry) if the findings say nothing about its colors or logo.
+
+2. DEADLINES: for each application deadline the findings state, add one entry
+   to `deadlines` with its college_name, kind, and ISO date.
+
+Never invent a color, logo, or date that wasn't in the findings.
+
+Respond with a single raw JSON object matching the BrandingAndDeadlinesExtraction schema."""
+
+
+async def _persist_branding_and_deadlines(callback_context) -> None:
+    """Writes College.schoolColors/logoUrl/deadlines as soon as THIS small,
+    fast extraction call finishes — see the module comment above this
+    agent's schemas for why it's split out from Stage 3's slower full
+    extraction rather than being derived from it after the fact.
+
+    Same shape as _persist_requirements_and_sources below (async,
+    `await asyncio.sleep(...)` rather than `time.sleep(...)`, the logo's
+    real network lookup run via `asyncio.to_thread`) and for the identical
+    reason: this whole backend is one uvicorn process on a single asyncio
+    event loop, so a blocking call here would freeze every other in-flight
+    request, not just this one.
+    """
+    user_id = callback_context.user_id
+    extraction = callback_context.state.get("branding_and_deadlines") or {}
+    name_to_id: dict[str, str] = callback_context.state.get("college_name_to_id", {})
+    new_college_names: list[str] = callback_context.state.get("new_college_names", [])
+
+    # This callback always covers exactly one college — see
+    # _persist_requirements_and_sources's matching comment below.
+    college_name = new_college_names[0] if new_college_names else None
+    college_id = name_to_id.get(college_name) if college_name else None
+    if not college_id:
+        log_agent_run_complete(callback_context, "No college to research.")
+        return
+
+    # --- School color: already fully known from this call's own output, no
+    # further lookup needed, so it's applied silently while the loading
+    # spinner on the logo cell (the actually slow part, next) is still
+    # showing. -----------------------------------------------------------
+    branding_entry = next(
+        (
+            b
+            for b in extraction.get("branding", [])
+            if b.get("college_name") == college_name
+        ),
+        {},
+    )
+    color_fields: dict[str, str] = {}
+    primary = branding_entry.get("primary_color_hex")
+    if primary and _HEX_COLOR_RE.match(primary):
+        color_fields["primary"] = primary
+    secondary = branding_entry.get("secondary_color_hex")
+    if secondary and _HEX_COLOR_RE.match(secondary):
+        color_fields["secondary"] = secondary
+    # Pinned override wins over whatever this run's research found — see
+    # _KNOWN_SCHOOL_COLORS's docstring. Applied even if the LLM reported no
+    # color at all for this college.
+    color_fields.update(_KNOWN_SCHOOL_COLORS.get(_known_college_key(college_name), {}))
+    if color_fields:
+        try:
+            ft.update_college_branding(user_id, college_id, color_fields)
+        except Exception:
+            logger.warning(
+                "Failed to save school colors for %r, continuing", college_name,
+                exc_info=True,
+            )
+
+    # --- Logo: the genuinely slow part (a real network lookup, logobrands.
+    # com and/or Wikipedia, with its own retry/backoff), which is exactly
+    # why its loading spinner (research_stage == "logo", set before this
+    # whole college's research began) has been showing this whole time
+    # rather than only appearing now. --------------------------------------
+    try:
+        logo_url = await asyncio.to_thread(_fetch_college_logo, college_name)
+        if not logo_url:
+            # Absolute last resort, for a college whose Wikipedia article
+            # itself couldn't be resolved: college_research_agent's own
+            # google_search-grounded Commons lookup for a seal filename.
+            logo_filename = branding_entry.get("logo_commons_filename")
+            if logo_filename:
+                logo_url = await asyncio.to_thread(
+                    _resolve_commons_logo_url, logo_filename
+                )
+    except Exception:
+        logger.warning(
+            "Logo lookup failed for %r, continuing without one", college_name,
+            exc_info=True,
+        )
+        logo_url = None
+    if logo_url:
+        try:
+            ft.update_college_branding(user_id, college_id, {"logoUrl": logo_url})
+        except Exception:
+            logger.warning(
+                "Failed to save logo for %r, continuing", college_name,
+                exc_info=True,
+            )
+    # Advance the spinner to the first deadline field regardless of whether
+    # a logo was actually found — "found, or determined there isn't one" is
+    # still a resolved state for that cell, not a reason to keep spinning.
+    try:
+        ft.advance_research_stage(user_id, college_id, "ea")
+    except Exception:
+        logger.warning(
+            "Failed to advance research stage past logo for %r", college_name,
+            exc_info=True,
+        )
+
+    # --- Deadlines, ONE FIELD AT A TIME — EA, then ED, then RD, then
+    # financial aid. The loading spinner (research_stage) sits on exactly
+    # one of these at a time, advancing to the next only once the current
+    # one is written (found) or confirmed there's nothing to write (not
+    # found) — either way that cell is resolved and the spinner moves on,
+    # rather than every still-empty deadline cell spinning together. -------
+    _DEADLINE_FIELD = {"EA": "ea", "ED": "ed", "RD": "rd", "financial_aid": "financialAid"}
+    deadlines_by_field: dict[str, str] = {}
+    for d in extraction.get("deadlines", []):
+        if d.get("college_name") != college_name:
+            continue
+        field = _DEADLINE_FIELD.get(d.get("kind"))
+        iso = d.get("deadline_iso")
+        if not field or not iso:
+            continue
+        existing = deadlines_by_field.get(field)
+        # A college can have e.g. both ED I and ED II, which both map to
+        # "ed" — keep the earliest (ISO strings sort lexicographically),
+        # the more urgent one, rather than whichever came later in the list.
+        if existing is None or iso < existing:
+            deadlines_by_field[field] = iso
+
+    _DEADLINE_FIELD_ORDER = ("ea", "ed", "rd", "financialAid")
+    _NEXT_STAGE_AFTER_DEADLINE = {
+        "ea": "ed",
+        "ed": "rd",
+        "rd": "financialAid",
+        "financialAid": "requirements",
+    }
+    for field in _DEADLINE_FIELD_ORDER:
+        if field in deadlines_by_field:
+            try:
+                ft.update_college_deadlines(
+                    user_id, college_id, {field: deadlines_by_field[field]}
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to save %s deadline for college %r, continuing",
+                    field, college_id, exc_info=True,
+                )
+        # Short, deliberate pause before revealing this field resolved —
+        # long enough for the frontend's poll to actually catch this cell's
+        # spinner before it moves to the next one, short enough that four
+        # of these barely register against a multi-minute research run.
+        await asyncio.sleep(0.6)
+        try:
+            ft.advance_research_stage(user_id, college_id, _NEXT_STAGE_AFTER_DEADLINE[field])
+        except Exception:
+            logger.warning(
+                "Failed to advance research stage past %s for %r",
+                field, college_name, exc_info=True,
+            )
+
+    log_agent_run_complete(
+        callback_context,
+        f"Found branding and {len(deadlines_by_field)} deadline(s) for {college_name}.",
+    )
+
+
+branding_and_deadlines_agent = LlmAgent(
+    model=config.worker_model,
+    name="branding_and_deadlines_agent",
+    description="Quickly extracts a college's branding and deadlines from research "
+    "findings, ahead of the slower full requirements extraction.",
+    instruction=_BRANDING_AND_DEADLINES_INSTRUCTION,
+    output_schema=BrandingAndDeadlinesExtraction,
+    disallow_transfer_to_parent=True,
+    disallow_transfer_to_peers=True,
+    output_key="branding_and_deadlines",
+    before_agent_callback=log_agent_run_start,
+    after_agent_callback=_persist_branding_and_deadlines,
+)
+
+
+# --- Stage 3: structure findings into Requirement + ResearchSource docs -----
+
+
+class ExtractedRequirement(BaseModel):
+    college_name: str = Field(
+        description="Must exactly match a college name/header from the findings."
+    )
+    type: str = Field(
+        description="Short category: essay, recommendation, testing, deadline, "
+        "financial_aid, portfolio, interview, or major_specific."
+    )
+    description: str = Field(
+        description="A specific, concrete description — e.g. the exact essay prompt "
+        "text, or 'Regular Decision deadline: January 5'. If a word count is "
+        "involved, state ONLY the actual limit (e.g. '650 words maximum') — drop "
+        "any 'X-Y words recommended' range some schools also publish, that's "
+        "noise on top of the real limit, not part of it."
+    )
+    required: bool = True
+    # No deadline_kind (EA/ED/RD/financial_aid) here — that classification
+    # now happens up front in branding_and_deadlines_agent, which owns
+    # College.deadlines exclusively (see that agent's module comment). This
+    # deadline_iso is still per-requirement (e.g. an essay's own due date),
+    # independent of that summary field.
+    deadline_iso: str | None = Field(
+        default=None, description="ISO 8601 date (YYYY-MM-DD) if found, else null."
+    )
+    recommendation_count: int | None = Field(
+        default=None,
+        description="Set ONLY when type='recommendation': the TOTAL number of "
+        "individual letters this requirement covers, resolved to one whole number — "
+        "e.g. '2 teacher recommendations' is 2; '1 counselor + 2 teacher letters' "
+        "is 3 (sum across recommender types). Don't just count how many times a "
+        "numeral appears — a school restating the same total in different words "
+        "('2 teacher recommendations, one from a STEM class, one from humanities') "
+        "is still 2, not 2+1+1. Default to 1 if the findings don't state a number. "
+        "Null for every other requirement type.",
+    )
+    category: str | None = None
+    confidence: Literal["high", "medium", "low"]
+    needs_verification: bool = Field(
+        description="True if the findings marked this UNCERTAIN or it seems outdated/contradictory."
+    )
+    source_short_ids: list[str] = Field(
+        default_factory=list,
+        description="src-N ids from AVAILABLE SOURCES that support this specific requirement.",
+    )
+
+
+class RequirementsExtraction(BaseModel):
+    requirements: list[ExtractedRequirement]
 
 
 _REQUIREMENTS_INSTRUCTION = f"""You are the Requirements Agent. Convert the research
@@ -750,10 +991,6 @@ For every requirement:
   requirement even if the claims text paraphrased it. Use [] only when
   truly nothing in AVAILABLE SOURCES relates to this requirement at all,
   not merely because the wording doesn't match closely.
-- deadline_kind: for type="deadline" items only, classify which deadline it
-  is (EA/ED/RD/financial_aid) whenever you can tell — this is what powers
-  the dashboard's per-college deadline columns. Leave null if ambiguous
-  rather than guessing.
 - recommendation_count: for type="recommendation" items only, resolve the
   TOTAL number of individual letters this requirement covers to one whole
   number — this is what powers the Readiness score's recommendations
@@ -774,24 +1011,26 @@ findings. If the findings marked something UNCERTAIN, still extract it as a
 requirement — confidence="low", needs_verification=true, description taken
 from what the findings actually said (including the uncertainty itself).
 
-BRANDING: separately, if a college's findings state a brand color (hex) or a
-Wikimedia Commons logo filename, add one entry to `branding` for it. Copy
-the hex code and filename exactly as given — never normalize, guess, or
-invent one that wasn't explicitly in the findings. Skip a college entirely
-(don't add an all-null entry) if the findings say nothing about its colors
-or logo.
-
 Respond with a single raw JSON object matching the RequirementsExtraction schema."""
 
 
 async def _persist_requirements_and_sources(callback_context) -> None:
-    """Writes Requirement + (deduped, per-college) ResearchSource docs, plus
-    College.schoolColors/logoUrl/deadlines. Runs as an after_agent_callback
-    since output_schema agents can't also call tools mid-turn — this is
-    where the structured output actually lands in Firestore, same division
-    of labor as citation_replacement_callback in deep-search.
+    """Writes Requirement + (deduped, per-college) ResearchSource docs — the
+    detailed essay prompts, recommendation counts, etc. behind the table's
+    "N tracked" count. Runs as an after_agent_callback since output_schema
+    agents can't also call tools mid-turn — this is where the structured
+    output actually lands in Firestore, same division of labor as
+    citation_replacement_callback in deep-search.
 
-    async, not a plain def, and every pacing pause below is `await
+    College.schoolColors/logoUrl/deadlines are NOT written here — see
+    branding_and_deadlines_agent above, which runs (and persists them)
+    BEFORE this slower, more detailed extraction even starts, so a student
+    watching the Colleges table sees those land while this agent's own
+    (larger, thus slower) LLM call is still in progress, rather than
+    everything having been sitting fully known in memory the whole time and
+    only getting revealed once this finishes.
+
+    async, not a plain def, and the pacing pause below is `await
     asyncio.sleep(...)` rather than `time.sleep(...)` — found live: ADK's
     BaseAgent calls an after_agent_callback directly on the server's single
     asyncio event loop (only awaiting it afterward if it returns an
@@ -799,36 +1038,14 @@ async def _persist_requirements_and_sources(callback_context) -> None:
     worker threads. A plain `time.sleep()` here doesn't just pause THIS
     request — it freezes that one shared event loop for every other
     in-flight request, including the Colleges page's concurrent polling GET
-    (Colleges.tsx). Every "paced" write below WAS landing in Firestore one
-    at a time as designed, but the frontend's poll couldn't get through to
-    observe any of the intermediate states until this entire callback
-    (several colleges' worth of writes and sleeps) finally finished, so the
-    whole row appeared to jump at once. `await asyncio.sleep(...)` actually
-    yields the event loop, letting a queued poll request run during the
-    pause; `_fetch_college_logo`'s real (and sometimes multi-second)
-    network call is similarly wrapped in `asyncio.to_thread` below so it
-    can't cause the same freeze.
+    (Colleges.tsx).
 
-    Deliberately staged, not one flat pass, for two reasons: (1) each stage
-    below is wrapped so one college's bad data or a transient Firestore/
-    network error can't take the others down with it — found live, an
-    unhandled exception anywhere in here used to fail the entire Requirements
-    Agent run, discarding every college's already-extracted data in the same
-    batch and aborting every pipeline stage after it (conflict detection,
-    task planning, readiness); (2) school color (Stage 1), logo (Stage 2),
-    and deadlines (Stage 4) are each their own pass, written per-college with
-    a deliberate pause between colleges, so a student watching the Colleges
-    table (which polls Firestore while research is running — see
-    Colleges.tsx) sees each college's row color, logo, and dates land
-    individually as they're found — genuinely as separate discoveries, not
-    bundled into one write, since color is already known the instant this
-    callback runs (extracted right alongside the requirements themselves)
-    while the logo needs its own slower deterministic lookup (network calls
-    to logobrands.com/Wikipedia, see _fetch_college_logo) — rather than the
-    whole batch jumping from placeholder to fully populated in one silent
-    poll tick. Detailed Requirement docs (essay prompts, recommendation
-    counts, etc.) are the least visually interesting of these and are saved
-    last, in one batch, with no pacing.
+    Wrapped so one college's bad data or a transient Firestore error can't
+    take the others down with it — found live, an unhandled exception
+    anywhere in here used to fail the entire Requirements Agent run,
+    discarding every college's already-extracted data in the same batch and
+    aborting every pipeline stage after it (conflict detection, task
+    planning, readiness).
     """
     user_id = callback_context.user_id
     extraction = callback_context.state.get("extracted_requirements") or {}
@@ -841,115 +1058,21 @@ async def _persist_requirements_and_sources(callback_context) -> None:
         log_agent_run_complete(callback_context, "No requirements extracted.")
         return
 
-    branding_by_name: dict[str, dict] = {}
-    for entry in extraction.get("branding", []):
-        name = entry.get("college_name")
-        if name:
-            branding_by_name[name] = entry
-
     # This callback always covers exactly one college (see
     # PerCollegeResearchAndExtraction in orchestrator_agent.py, which scopes
     # new_college_names down to a single name before invoking
-    # requirements_pipeline) — college_id is the one loading-spinner target
-    # every stage below advances through, in order: "logo" (already set by
-    # start_college_research before this run even started) -> "ea" -> "ed"
-    # -> "rd" -> "financialAid" -> "requirements".
+    # requirements_pipeline).
     college_name = new_college_names[0] if new_college_names else None
-    college_id = name_to_id.get(college_name) if college_name else None
 
-    # --- Stage 1: school color — already fully known the moment we're
-    # here (it came back in the same structured extraction as the
-    # requirements, no lookup needed), so it's applied silently while the
-    # loading spinner on the logo cell (Stage 2, the actually slow part) is
-    # still showing, rather than getting a spinner cell of its own. -------
-    if college_id:
-        entry = branding_by_name.get(college_name, {})
-        fields: dict[str, str] = {}
-        primary = entry.get("primary_color_hex")
-        if primary and _HEX_COLOR_RE.match(primary):
-            fields["primary"] = primary
-        secondary = entry.get("secondary_color_hex")
-        if secondary and _HEX_COLOR_RE.match(secondary):
-            fields["secondary"] = secondary
-        # Pinned override wins over whatever this run's research found —
-        # see _KNOWN_SCHOOL_COLORS's docstring. Applied even if the LLM
-        # reported no color at all for this college.
-        fields.update(_KNOWN_SCHOOL_COLORS.get(_known_college_key(college_name), {}))
-        if fields:
-            try:
-                ft.update_college_branding(user_id, college_id, fields)
-            except Exception:
-                logger.warning(
-                    "Failed to save school colors for %r, continuing", college_name,
-                    exc_info=True,
-                )
-
-        # --- Stage 2: logo — the genuinely slow part (a real network
-        # lookup, logobrands.com and/or Wikipedia, with its own retry/
-        # backoff), which is exactly why its loading spinner (research_
-        # stage == "logo", set before this whole college's research began)
-        # has been showing this whole time rather than only appearing now. -
-        entry = branding_by_name.get(college_name, {})
-        try:
-            # asyncio.to_thread: _fetch_college_logo does real, sometimes
-            # multi-second, synchronous network I/O (urllib) — run off the
-            # event loop so it can't freeze other requests either, same
-            # reasoning as this callback's own async'ified pacing pauses.
-            logo_url = await asyncio.to_thread(_fetch_college_logo, college_name)
-            if not logo_url:
-                # Absolute last resort, for a college whose Wikipedia
-                # article itself couldn't be resolved: college_research_
-                # agent's own google_search-grounded Commons lookup for a
-                # seal filename.
-                logo_filename = entry.get("logo_commons_filename")
-                if logo_filename:
-                    logo_url = await asyncio.to_thread(
-                        _resolve_commons_logo_url, logo_filename
-                    )
-        except Exception:
-            logger.warning(
-                "Logo lookup failed for %r, continuing without one", college_name,
-                exc_info=True,
-            )
-            logo_url = None
-        if logo_url:
-            try:
-                ft.update_college_branding(user_id, college_id, {"logoUrl": logo_url})
-            except Exception:
-                logger.warning(
-                    "Failed to save logo for %r, continuing", college_name,
-                    exc_info=True,
-                )
-        # Advance the spinner to the first deadline field regardless of
-        # whether a logo was actually found — "found, or determined there
-        # isn't one" is still a resolved state for that cell, not a reason
-        # to keep spinning.
-        try:
-            ft.advance_research_stage(user_id, college_id, "ea")
-        except Exception:
-            logger.warning(
-                "Failed to advance research stage past logo for %r", college_name,
-                exc_info=True,
-            )
-
-    # --- Stage 3: structure every requirement, collecting deadlines and
-    # ResearchSource docs along the way — nothing written to College or
-    # Requirement docs yet, just building the lists Stages 4-5 write. ------
+    # --- Build every Requirement doc in memory (saved in paced batches
+    # below) — ResearchSource docs are deduped and written immediately as
+    # they're first referenced, below, since there's no reveal-pacing
+    # reason to hold those back. -------------------------------------------
     source_doc_id_cache: dict[
         tuple[str, str], str
     ] = {}  # (short_id, college_id) -> doc id
     requirements: list[Requirement] = []
     skipped_colleges: set[str] = set()
-    # college_id -> {"ea"/"ed"/"rd"/"financialAid": ISO date string} — merged
-    # into College.deadlines below so the dashboard has real dates to show,
-    # not just the underlying Requirement docs.
-    deadlines_by_college: dict[str, dict[str, str]] = {}
-    _DEADLINE_FIELD = {
-        "EA": "ea",
-        "ED": "ed",
-        "RD": "rd",
-        "financial_aid": "financialAid",
-    }
 
     for item in extracted:
         try:
@@ -957,19 +1080,6 @@ async def _persist_requirements_and_sources(callback_context) -> None:
             if not college_id:
                 skipped_colleges.add(item["college_name"])
                 continue
-
-            deadline_kind = item.get("deadline_kind")
-            deadline_iso = item.get("deadline_iso")
-            field = _DEADLINE_FIELD.get(deadline_kind) if deadline_kind else None
-            if field and deadline_iso:
-                college_deadlines = deadlines_by_college.setdefault(college_id, {})
-                existing = college_deadlines.get(field)
-                # A college can have e.g. both ED I and ED II, which both map
-                # to "ed" — keep the earliest (ISO strings sort
-                # lexicographically), the more urgent one, rather than
-                # whichever came later in the list.
-                if existing is None or deadline_iso < existing:
-                    college_deadlines[field] = deadline_iso
 
             resolved_source_ids: list[str] = []
             for short_id in item.get("source_short_ids", []):
@@ -1052,54 +1162,14 @@ async def _persist_requirements_and_sources(callback_context) -> None:
                 exc_info=True,
             )
 
-    # --- Stage 4: deadlines, ONE FIELD AT A TIME — EA, then ED, then RD,
-    # then financial aid. The loading spinner (research_stage) sits on
-    # exactly one of these at a time, advancing to the next only once the
-    # current one is written (found) or confirmed there's nothing to write
-    # (not found) — either way that cell is resolved and the spinner moves
-    # on, rather than every still-empty deadline cell spinning together. --
-    _DEADLINE_FIELD_ORDER = ("ea", "ed", "rd", "financialAid")
-    _NEXT_STAGE_AFTER_DEADLINE = {
-        "ea": "ed",
-        "ed": "rd",
-        "rd": "financialAid",
-        "financialAid": "requirements",
-    }
-    college_deadlines = deadlines_by_college.get(college_id, {}) if college_id else {}
-    for field in _DEADLINE_FIELD_ORDER:
-        if not college_id:
-            break
-        if field in college_deadlines:
-            try:
-                ft.update_college_deadlines(
-                    user_id, college_id, {field: college_deadlines[field]}
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to save %s deadline for college %r, continuing",
-                    field, college_id, exc_info=True,
-                )
-        # Short, deliberate pause before revealing this field resolved —
-        # long enough for the frontend's poll to actually catch this cell's
-        # spinner before it moves to the next one, short enough that four
-        # of these barely register against a multi-minute research run.
-        await asyncio.sleep(0.6)
-        try:
-            ft.advance_research_stage(user_id, college_id, _NEXT_STAGE_AFTER_DEADLINE[field])
-        except Exception:
-            logger.warning(
-                "Failed to advance research stage past %s for %r",
-                field, college_name, exc_info=True,
-            )
-
-    # --- Stage 5: the full requirement docs — essay prompts, recommendation
-    # counts, etc., behind the table's "N tracked" count and (via
-    # readiness_agent.py, which runs after this pipeline) its Readiness
-    # column. Saved in small paced chunks, not one flat write, with
-    # `requirements_total` set first — this is what lets the frontend show
-    # a requirements-saved-so-far progress bar (see College.
+    # --- Save the requirement docs in small paced chunks, not one flat
+    # write, with `requirements_total` set first — this is what lets the
+    # frontend show a requirements-saved-so-far progress bar (see College.
     # requirements_total) instead of the count silently jumping from 0 to
-    # its final value. -------------------------------------------------
+    # its final value. research_stage advances to "requirements" the
+    # moment branding_and_deadlines_agent finishes (see that agent's
+    # _NEXT_STAGE_AFTER_DEADLINE), so by the time this runs the table is
+    # already showing that spinner, waiting on exactly this. -------------
     requirements_by_college: dict[str, list[Requirement]] = {}
     for req in requirements:
         requirements_by_college.setdefault(req.college_id, []).append(req)
@@ -1159,7 +1229,12 @@ requirements_agent = LlmAgent(
 
 requirements_pipeline = SequentialAgent(
     name="requirements_pipeline",
-    description="Refines research findings to a quality bar, then structures them into "
-    "Requirement + ResearchSource records.",
-    sub_agents=[requirements_confidence_loop, requirements_agent],
+    description="Refines research findings to a quality bar, quickly extracts branding "
+    "and deadlines, then structures the full findings into Requirement + "
+    "ResearchSource records.",
+    sub_agents=[
+        requirements_confidence_loop,
+        branding_and_deadlines_agent,
+        requirements_agent,
+    ],
 )

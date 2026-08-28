@@ -133,15 +133,25 @@ function DeadlineCell({ iso, active }: { iso: string | null; active: boolean }) 
 }
 
 /** Shown in the Requirements cell while College.requirementsTotal is set —
- * requirements are saved in small paced batches (see requirements_agent.py
- * Stage 5), so `done` climbs visibly toward `total` instead of the count
- * jumping straight from nothing to its final value. */
+ * requirements are saved in small paced batches (see requirements_agent.py),
+ * so `done` climbs visibly toward `total` instead of the count jumping
+ * straight from nothing to its final value.
+ *
+ * `done` is clamped to `total` — a purely defensive display fix (see
+ * college_intake_agent.py's `not match.researching` guard for the real
+ * fix): a college's saved-requirement count is every Requirement doc that
+ * currently exists for it, which briefly exceeded `total` when a bug let
+ * two research passes for the same college run at once (each setting its
+ * OWN total, while both runs' saved docs counted toward the same visible
+ * `done`) — this is the fallback that keeps the label from ever reading
+ * something nonsensical like "36/18" even if that race reappears. */
 function RequirementsProgressCell({ done, total }: { done: number; total: number }) {
-  const fraction = total > 0 ? done / total : 0;
+  const clampedDone = Math.min(done, total);
+  const fraction = total > 0 ? clampedDone / total : 0;
   return (
-    <div className="flex items-center gap-2" title={`${done} of ${total} requirements found`}>
+    <div className="flex items-center gap-2" title={`${clampedDone} of ${total} requirements found`}>
       <span className="text-xs tabular-nums text-muted-foreground">
-        {done}/{total}
+        {clampedDone}/{total}
       </span>
       <div className="h-1.5 w-16 shrink-0 rounded-full bg-secondary overflow-hidden">
         <div
@@ -298,7 +308,15 @@ export function CollegeTable({
                   />
                 </td>
                 <td className={BODY_CELL}>
-                  {college.requirementsTotal != null ? (
+                  {/* `college.researching &&`: requirementsTotal alone
+                      isn't enough — it's only meaningful while THIS
+                      college is actively being researched. Gating on
+                      researching too means a fully-researched row can
+                      never show the progress bar again, even if
+                      requirementsTotal were ever left stale (see
+                      RequirementsProgressCell's docstring for the bug this
+                      guards against). */}
+                  {college.researching && college.requirementsTotal != null ? (
                     <RequirementsProgressCell
                       done={requirements.length}
                       total={college.requirementsTotal}

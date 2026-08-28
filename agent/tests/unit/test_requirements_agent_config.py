@@ -22,6 +22,7 @@ from app.sub_agents.requirements_agent import (
     _is_official_source,
     _known_college_key,
     _match_logobrands_entry,
+    branding_and_deadlines_agent,
     requirements_agent,
     requirements_confidence_loop,
     requirements_pipeline,
@@ -100,7 +101,23 @@ def test_washu_color_is_pinned_to_green_not_red() -> None:
 
 
 def test_requirements_pipeline_order() -> None:
+    """branding_and_deadlines_agent must run BEFORE requirements_agent —
+    it's the smaller/faster extraction that lets the Colleges table start
+    filling in color/logo/deadlines while the slower, more detailed
+    requirements_agent call is still in progress, not after."""
     assert requirements_pipeline.sub_agents == [
         requirements_confidence_loop,
+        branding_and_deadlines_agent,
         requirements_agent,
     ]
+
+
+def test_branding_and_deadlines_agent_has_no_tools() -> None:
+    """Same reasoning as requirements_agent: it only structures findings
+    already gathered by the Research Agent, never searches on its own."""
+    assert branding_and_deadlines_agent.tools == []
+
+
+def test_branding_and_deadlines_agent_output_schema_wired() -> None:
+    assert branding_and_deadlines_agent.output_key == "branding_and_deadlines"
+    assert branding_and_deadlines_agent.output_schema is not None

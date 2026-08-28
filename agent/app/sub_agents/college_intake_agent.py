@@ -120,7 +120,23 @@ class CollegeIntakeAgent(BaseAgent):
                 )
             if match:
                 name_to_id[name] = match.id  # type: ignore[assignment]
-                if match.id not in researched_ids:
+                # `and not match.researching`: without this, submitting the
+                # same college name again WHILE its first research pass is
+                # still in flight (no Requirement docs saved yet, so it
+                # still looks like a stub) would start a SECOND, fully
+                # independent PerCollegeResearchAndExtraction pass for the
+                # same college_id — both eventually save their own
+                # Requirement docs with nothing deduping between them.
+                # Found live: this is what produced a Requirements column
+                # showing "36/18" (each run's persist stage sets
+                # requirementsTotal to ITS OWN count, but the frontend's
+                # done-count is every Requirement doc that exists for the
+                # college, i.e. both runs' saved docs added together).
+                # `researching` is exactly the "already actively being
+                # worked on" signal (see College.researching's docstring),
+                # so a college already mid-research is left out of
+                # new_names here rather than re-entering the pipeline.
+                if match.id not in researched_ids and not match.researching:
                     new_names.append(name)
             else:
                 if placeholder_rows_created > 0:
