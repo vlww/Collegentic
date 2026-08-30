@@ -5,17 +5,20 @@ import { NAV_ITEMS } from "./nav";
 
 export function Sidebar() {
   return (
-    <aside className="hidden md:flex md:w-64 md:flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border shrink-0">
-      <div className="flex items-center gap-3 px-4 pt-6 pb-4">
+    <aside className="hidden md:flex md:w-[276px] md:flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border shrink-0">
+      <div className="flex items-center justify-center gap-2 px-4 pt-6 pb-4">
         <img src={logo} alt="" className="h-[62px] w-[62px] shrink-0 object-contain" />
         <span
-          className="uppercase text-[51px] leading-none"
+          className="uppercase text-[58px] leading-none"
           style={{ fontFamily: "'Maintanker', sans-serif" }}
         >
           Collegentic
         </span>
       </div>
-      <div className="mx-auto mb-3 h-[3px] w-[222px] rounded-full bg-[#8B85A3]/60 dark:bg-[#A79FC2]/60" />
+      {/* Same color/opacity as the nav labels below (text-sidebar-foreground/75)
+          instead of its own hardcoded color — one consistent "muted sidebar
+          chrome" tone instead of two unrelated ones. */}
+      <div className="mx-auto mb-3 h-[3px] w-[222px] rounded-full bg-sidebar-foreground/75" />
       <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-1">
         {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
           <NavLink

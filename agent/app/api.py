@@ -67,6 +67,8 @@ from app.schemas import (
 )
 from app.sub_agents.task_planning_agent import task_planning_pipeline
 from app.tools import firestore_tools as ft
+from app.tools.essay_matching import recompute_essay_matches
+from app.tools.grammar_check import check_grammar
 from app.tools.scoring import (
     compute_priority_score,
     compute_readiness_score,
@@ -333,7 +335,9 @@ async def replan_tasks(user_id: str = Depends(require_user_id)) -> list[dict]:
 
     async def _create_session():
         return await runner.session_service.create_session(
-            app_name="task_replan", user_id=user_id
+            app_name="task_replan",
+            user_id=user_id,
+            state={"force_full_replan": True},
         )
 
     async def _run(session) -> None:
@@ -461,6 +465,12 @@ def recompute_readiness(user_id: str = Depends(require_user_id)) -> list[dict]:
     test_scores_submitted = ft.get_test_scores_submitted(user_id)
     for college in colleges:
         requirements = ft.get_requirements(user_id, [college.id])
+        # Same guard as readiness_agent.py's CollegeReadinessContextAgent —
+        # a college with zero requirements hasn't actually been researched
+        # yet, so scoring it would just persist compute_readiness_score's
+        # vacuous "owes nothing" default (a flat 80%) as if it were real.
+        if not requirements:
+            continue
         college_recommendations = recommendations_for_college(
             all_recommendations, college.id
         )
@@ -662,9 +672,17 @@ def create_material(
 ) -> dict:
     """The student's own essay/activity/note library — .agents-cli-spec.md
     § Constraints: "never edited by agents." This is the only way a
-    StudentMaterial comes into existence; essay_analysis_agent
+    StudentMaterial comes into existence; essay_matching_pipeline
     (app/sub_agents/essay_matching_agent.py) only ever reads these, never
-    writes or edits their text."""
+    writes or edits their text.
+
+    Recomputes essay matches synchronously right after saving — the fast,
+    deterministic categorizer in app/tools/essay_matching.py is cheap
+    enough (no LLM, no network call) to run inline here rather than
+    waiting for the next college-research pipeline run. Without this, a
+    student adding a material saw the Essay Map add the node with no
+    connections until they happened to research another college — not
+    slow, just never triggered."""
     material_id = ft.save_student_material(
         user_id,
         StudentMaterial(
@@ -676,8 +694,57 @@ def create_material(
             word_count=body.word_count,
         ),
     )
+    recompute_essay_matches(user_id)
     material = next(m for m in ft.get_student_materials(user_id) if m.id == material_id)
     return material.model_dump(mode="json", by_alias=True)
+
+
+@router.put("/materials/{material_id}")
+def update_material(
+    material_id: str, body: CreateMaterialRequest, user_id: str = Depends(require_user_id)
+) -> dict:
+    """The student editing their own existing material (Essays' "Your
+    Materials" edit icon) — same "never edited by agents" constraint as
+    create_material above, just overwriting title/type/topic/description/
+    partialText/wordCount on the existing doc instead of making a new one.
+    model_copy off the existing record (not a fresh StudentMaterial) so id,
+    createdAt, and any agent-derived fields (completionPercentage, themes,
+    status) survive the edit untouched."""
+    existing = next((m for m in ft.get_student_materials(user_id) if m.id == material_id), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Material not found")
+    updated = existing.model_copy(
+        update={
+            "title": body.title,
+            "type": body.type,
+            "topic": body.topic,
+            "description": body.description,
+            "partial_text": body.partial_text,
+            "word_count": body.word_count,
+        }
+    )
+    ft.save_student_material(user_id, updated)
+    # A material's category can change with an edit (e.g. its topic now
+    # reads as "greatest challenge" instead of "why this major") — recompute
+    # rather than leave a stale match pointing at the old category.
+    recompute_essay_matches(user_id)
+    material = next(m for m in ft.get_student_materials(user_id) if m.id == material_id)
+    return material.model_dump(mode="json", by_alias=True)
+
+
+@router.delete("/materials/{material_id}")
+def delete_material(material_id: str, user_id: str = Depends(require_user_id)) -> dict:
+    """The student removing one of their own materials (Essays' "Your
+    Materials" trash icon) — same 404-if-missing / recompute-after shape as
+    update_material above. recompute_essay_matches both re-matches any
+    prompt that had this material as its best fit against whatever's left
+    in its category, and (see essay_matching.py's orphan cleanup) deletes
+    the match doc outright if nothing remains."""
+    if not any(m.id == material_id for m in ft.get_student_materials(user_id)):
+        raise HTTPException(status_code=404, detail="Material not found")
+    ft.delete_student_material(user_id, material_id)
+    recompute_essay_matches(user_id)
+    return {"id": material_id}
 
 
 @router.get("/essay-prompts")
@@ -698,10 +765,41 @@ def list_essay_prompts(
 
 @router.get("/essay-matches")
 def list_essay_matches(user_id: str = Depends(require_user_id)) -> list[dict]:
+    """Recomputes before reading, not just relying on the write-side
+    triggers in create_material/update_material/essay_matching_pipeline —
+    found live: those cover a material or college changing AFTER this
+    endpoint's other triggers exist, but say nothing about data already in
+    Firestore from before recompute_essay_matches was wired up (or added in
+    the "wrong" order relative to it), which stays stuck at zero matches
+    forever with no write ever happening again to re-trigger it. Cheap
+    (pure Python, no network/LLM call — see essay_matching.py's module
+    docstring), so recomputing on every read keeps this endpoint always
+    correct instead of trusting stale writes."""
+    recompute_essay_matches(user_id)
     return [
         match.model_dump(mode="json", by_alias=True)
         for match in ft.get_essay_matches(user_id)
     ]
+
+
+class GrammarCheckRequest(BaseModel):
+    text: str
+
+
+@router.post("/grammar-check")
+def grammar_check(
+    body: GrammarCheckRequest, user_id: str = Depends(require_user_id)
+) -> dict:
+    """Essay Editor's "Check grammar" button — grammar/spelling/punctuation
+    only (app/tools/grammar_check.py), on whatever text the student
+    currently has in the editor. Takes raw `text` in the request body
+    rather than a material id: the student may be checking unsaved edits
+    that haven't gone through PUT /materials/{id} yet, and this doesn't
+    read or write Firestore either way — X-User-Id is still required, same
+    as every other route, purely for consistency.
+    """
+    issues = check_grammar(body.text)
+    return {"issues": [issue.model_dump(mode="json", by_alias=True) for issue in issues]}
 
 
 @router.get("/agent-runs")
@@ -784,7 +882,7 @@ async def send_orchestrator_message(
         _create_session,
         _run,
         failure_detail="Research hit an error partway through, even after "
-        "automatically retrying — some colleges may be incomplete. Check "
+        "automatically retrying. Some colleges may be incomplete. Check "
         "Agent Activity for details.",
     )
     return OrchestratorMessageResponse(reply=reply)

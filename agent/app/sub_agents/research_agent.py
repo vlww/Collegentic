@@ -39,7 +39,7 @@ from app.callbacks import (
     log_agent_run_complete,
     log_agent_run_start,
 )
-from app.config import config
+from app.config import config, llm_timeout_config
 
 _RESEARCH_INSTRUCTION = f"""You are the College Research Agent for Collegentic, a
 college-application taskmaster used by real students. Research a list of
@@ -118,6 +118,7 @@ def _after_research(callback_context) -> None:
 
 college_research_agent = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(),
     name="college_research_agent",
     description=(
         "Researches official admissions/financial-aid sources for a list of "
@@ -174,6 +175,7 @@ downstream agent splits your output by these headers.
 
 branding_research_agent = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(),
     name="branding_research_agent",
     description=(
         "The FIRST thing researched for a newly requested college — its brand "
@@ -204,6 +206,12 @@ FOR EACH COLLEGE, research and report ONLY:
   the financial aid priority date (CSS Profile/FAFSA), with exact dates.
   Prefer queries that target the college's own domain, e.g.
   "site:admissions.<college>.edu application deadlines".
+- If the college uses rolling admission or otherwise has no traditional
+  EA/ED/RD system, it still almost always publishes SOME general
+  application deadline or priority date (e.g. "Priority Deadline",
+  "Apply by March 1 for priority consideration") — search for and report
+  that too, explicitly labeled as such, rather than reporting only the
+  financial aid date and treating the rest as not found.
 
 Do NOT research brand colors, logo, essays, recommendations, testing
 policy, portfolio, interview, or major-specific requirements here —
@@ -226,6 +234,7 @@ one, and prefer the most recent cycle's information.
 
 deadlines_research_agent = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(),
     name="deadlines_research_agent",
     description=(
         "Researches a college's application deadlines only, right after "

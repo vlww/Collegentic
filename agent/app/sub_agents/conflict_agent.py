@@ -62,7 +62,7 @@ from google.adk.events import Event, EventActions
 from pydantic import BaseModel, Field
 
 from app.callbacks import log_agent_run_complete, log_agent_run_start
-from app.config import config
+from app.config import config, llm_timeout_config
 from app.schemas import Conflict, ConflictStatus, RecommendationStatus
 from app.tools import firestore_tools as ft
 from app.tools.scoring import earliest_college_deadline, recommendations_for_college
@@ -316,6 +316,7 @@ def _persist_conflicts(callback_context) -> None:
 
 conflict_detection_agent = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(batched=True),
     name="conflict_detection_agent",
     description="Detects cross-college requirement conflicts (recommendations, deadlines, testing, financial aid) grounded only in given facts.",
     instruction=_CONFLICT_DETECTION_INSTRUCTION,

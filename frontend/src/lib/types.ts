@@ -66,6 +66,12 @@ export interface College {
 export interface PipelineProgress {
   totalColleges: number;
   completedColleges: number;
+  /** "researching" while colleges are still being found/extracted,
+   * "planning" once every college's own research is done but tasks/
+   * readiness haven't finished yet, "essays" once those have but essay
+   * matching/conflict detection are still running, "done" once everything
+   * has finished. */
+  stage: "researching" | "planning" | "essays" | "done";
 }
 
 export type RequirementStatus =
@@ -225,6 +231,16 @@ export interface Recommendation {
   status: RecommendationStatus;
   collegeIds: string[];
   requestedAt: string | null;
+}
+
+/** A single grammar/spelling/punctuation mistake flagged by the Essay
+ * Editor's grammar check (agent/app/tools/grammar_check.py) — `original` is
+ * always a verbatim substring of the essay text it was checked against, so
+ * the frontend can locate and highlight it by literal string match. */
+export interface GrammarIssue {
+  original: string;
+  suggestion: string;
+  explanation: string;
 }
 
 export type AgentRunStatus = "running" | "completed" | "waiting_for_user" | "failed";

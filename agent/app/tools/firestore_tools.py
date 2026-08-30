@@ -400,6 +400,17 @@ def save_student_material(user_id: str, material: StudentMaterial) -> str:
     return _upsert(_materials(user_id), material)
 
 
+def delete_student_material(user_id: str, material_id: str) -> None:
+    """The student removing one of their own materials (Essays' "Your
+    Materials" trash icon) — same "never edited by agents" doc, just
+    deleted outright. Doesn't touch essayMatches itself: the caller
+    (delete_material in app/api.py) re-runs recompute_essay_matches right
+    after, which both rebuilds any prompt's match against a different
+    remaining material and deletes the now-stale match doc if none remain
+    (see essay_matching.py's own orphan cleanup)."""
+    _materials(user_id).document(material_id).delete()
+
+
 # --- Essay prompts + matches ---------------------------------------------
 
 
@@ -417,6 +428,21 @@ def save_essay_matches(user_id: str, matches: list[EssayMatch]) -> list[str]:
 
 def get_essay_matches(user_id: str) -> list[EssayMatch]:
     return _read_all(_essay_matches(user_id), EssayMatch)
+
+
+def delete_essay_matches(user_id: str, match_ids: list[str]) -> None:
+    """Batch-deletes EssayMatch docs by id — used by recompute_essay_matches
+    to drop a prompt's stale match once nothing in the student's current
+    materials matches it any more (e.g. the one matched material got
+    deleted), rather than leaving a match doc pointing at a material_id
+    that no longer resolves to anything."""
+    if not match_ids:
+        return
+    batch = _client().batch()
+    collection = _essay_matches(user_id)
+    for match_id in match_ids:
+        batch.delete(collection.document(match_id))
+    batch.commit()
 
 
 # --- Tasks (dedupe-aware) ------------------------------------------------
@@ -695,6 +721,16 @@ def advance_pipeline_progress(user_id: str) -> None:
     _pipeline_progress_doc(user_id).update(
         {"completedColleges": firestore.Increment(1)}
     )
+
+
+def set_pipeline_stage(user_id: str, stage: str) -> None:
+    """Flips PipelineProgress.stage — see its docstring for why this exists
+    separately from completed_colleges. Called from orchestrator_agent.py's
+    stage-marker steps, not from a research callback, since the transition
+    points ("every college researched" -> "planning tasks/scoring
+    readiness" -> "done") are pipeline-stage boundaries, not per-college
+    events."""
+    _pipeline_progress_doc(user_id).update({"stage": stage})
 
 
 def get_pipeline_progress(user_id: str) -> PipelineProgress | None:

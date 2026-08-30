@@ -13,15 +13,12 @@
 # limitations under the License.
 
 """Live test of essay_matching_pipeline in isolation: seeds College +
-Requirement + StudentMaterial docs directly (no live web research needed)
-so this stays fast, then runs the real EssayContextAgent ->
-essay_analysis_agent chain against them.
-
-Match scoring is genuine LLM judgment, not a deterministic formula, so
-assertions stay structural except where persistence's OWN validation
-guarantees an outcome regardless of what the LLM returns (the
-zero-materials case: no match is possible no matter what the LLM says,
-since every material_id is dropped against an empty known-id set).
+Requirement + StudentMaterial docs directly (no live web research needed,
+no LLM call either — app/tools/essay_matching.py is a deterministic
+keyword categorizer), then runs the real pipeline against them through
+Firestore. Category-matching logic itself is unit-tested directly in
+tests/unit/test_essay_matching.py; this test is about the Firestore
+read/write wiring (upserts, id validation) around it.
 """
 
 import asyncio
@@ -73,9 +70,8 @@ def _run(user_id: str) -> None:
 
 
 def test_essay_prompt_extracted_and_no_match_without_materials(user_id: str) -> None:
-    """Guaranteed by _persist_essay_analysis's own validation (drops any
-    match whose material_id isn't in the known set — always true when zero
-    materials exist), independent of what the LLM decides."""
+    """No materials at all means no candidate can exist in any category,
+    regardless of what the prompt itself categorizes as."""
     college_id = ft.save_college(user_id, College(name="Rice University"))
     ft.save_requirements(
         user_id,
@@ -98,10 +94,16 @@ def test_essay_prompt_extracted_and_no_match_without_materials(user_id: str) -> 
     assert ft.get_essay_matches(user_id) == []
 
 
-def test_strongly_matching_material_produces_a_grounded_match(user_id: str) -> None:
-    """A student material whose topic/excerpt is nearly the same challenge
-    the prompt asks about — about as strong a signal as this agent's
-    genuine judgment call can get."""
+def test_related_category_produces_a_weak_match(user_id: str) -> None:
+    """The prompt is labeled "Personal Statement" (phrase tier wins,
+    category=personal_statement); the material's own text is about
+    overcoming a challenge, so it classifies as greatest_challenge instead
+    of personal_statement, per classify_material_category's "text always
+    wins over type" rule. No exact-category candidate exists, so this
+    exercises _RELATED_CATEGORIES's weak-match fallback (baseline 45, not
+    60) rather than an exact-category match — Common App's own official
+    personal-statement prompt options include a "describe a challenge you
+    overcame" choice, so this pairing is a genuine, if weaker, reuse fit."""
     college_id = ft.save_college(user_id, College(name="Rice University"))
     ft.save_requirements(
         user_id,
@@ -131,10 +133,42 @@ def test_strongly_matching_material_produces_a_grounded_match(user_id: str) -> N
     _run(user_id)
 
     matches = ft.get_essay_matches(user_id)
-    if not matches:
-        pytest.skip("LLM did not surface a match for this near-verbatim topic overlap")
+    assert len(matches) == 1
 
     match = matches[0]
-    assert 0 <= match.match_score <= 100
-    assert match.reasoning != ""
+    assert match.material_id == ft.get_student_materials(user_id)[0].id
+    assert 45 <= match.match_score <= 100
+    assert "touch on" in match.reasoning
     assert match.recommendation.value in ("adapt", "new")
+
+
+def test_exact_category_match_beats_a_weak_related_one(user_id: str) -> None:
+    """When a genuine same-category material exists, it wins outright over
+    any related-category fallback — related categories are a last resort,
+    not an equally-weighted alternative."""
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Personal Statement: describe who you are in 650 words.",
+            )
+        ],
+    )
+    ft.save_student_material(
+        user_id,
+        StudentMaterial(
+            title="My personal statement",
+            type=MaterialType.SUPPLEMENTAL,
+            topic="Who I am and what shaped my personal outlook on life",
+        ),
+    )
+
+    _run(user_id)
+
+    matches = ft.get_essay_matches(user_id)
+    assert len(matches) == 1
+    assert "Both are personal statement essays" in matches[0].reasoning
+    assert matches[0].match_score >= 60

@@ -105,3 +105,51 @@ def test_scores_and_explains_college_readiness_deterministically(
     assert ready_college.readiness.explanation
     assert behind_college.readiness.explanation
     assert ready_college.readiness.computed_at is not None
+
+
+def test_skips_scoring_a_college_with_no_requirements_yet(user_id: str) -> None:
+    """Regression test: found live that a newly-added college — not yet
+    researched, zero Requirement docs — scored a flat 80% (every category's
+    "owes nothing" vacuous default landing at once: essays 100, recs 100,
+    testing 0, deadline 100), which read as real progress when there was
+    none. CollegeReadinessContextAgent must skip a college with zero
+    requirements entirely (leaving computed_at null) rather than persist
+    that placeholder, while still scoring its siblings that DO have real
+    data normally."""
+    unresearched_id = ft.save_college(user_id, College(name="Unresearched University"))
+    researched_id = ft.save_college(
+        user_id,
+        College(name="Rice University"),
+    )
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=researched_id,
+                type="essay",
+                description="Why Rice",
+                completion_percentage=100,
+            ),
+        ],
+    )
+
+    async def _go() -> None:
+        runner = InMemoryRunner(agent=readiness_pipeline, app_name="test")
+        session = await runner.session_service.create_session(
+            app_name="test", user_id=user_id
+        )
+        async for _ in runner.run_async(
+            new_message=types.Content(
+                role="user", parts=[types.Part.from_text(text="go")]
+            ),
+            user_id=user_id,
+            session_id=session.id,
+        ):
+            pass
+
+    asyncio.run(_go())
+
+    unresearched = ft.get_college(user_id, unresearched_id)
+    researched = ft.get_college(user_id, researched_id)
+    assert unresearched.readiness.computed_at is None
+    assert researched.readiness.computed_at is not None

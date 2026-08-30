@@ -1,15 +1,14 @@
 interface PageHeaderProps {
   title: string;
-  description?: string;
 }
 
-export function PageHeader({ title, description }: PageHeaderProps) {
+export function PageHeader({ title }: PageHeaderProps) {
   return (
-    <div className="mb-6">
-      <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
-      {description && (
-        <p className="mt-1 text-sm text-muted-foreground max-w-2xl">{description}</p>
-      )}
-    </div>
+    <h1
+      className="mb-6 text-center text-6xl uppercase tracking-wide text-foreground"
+      style={{ fontFamily: "'Maintanker', sans-serif" }}
+    >
+      {title}
+    </h1>
   );
 }

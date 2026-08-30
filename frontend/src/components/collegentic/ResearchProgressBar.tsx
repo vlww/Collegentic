@@ -20,12 +20,12 @@ export function ResearchProgressBar({ progress }: { progress: PipelineProgress }
   const fraction = totalColleges > 0 ? completedColleges / totalColleges : 0;
 
   return (
-    <Card>
-      <CardContent className="space-y-1.5 py-2.5">
+    <Card className="py-3">
+      <CardContent className="space-y-1.5">
         <div className="flex items-center justify-between text-sm">
           <span className="font-medium">
             {allResearched
-              ? "Finishing up — planning tasks and scoring readiness…"
+              ? "Finishing up, planning tasks and scoring readiness…"
               : `Researching ${totalColleges} college${totalColleges === 1 ? "" : "s"}…`}
           </span>
           <span className="text-xs text-muted-foreground">

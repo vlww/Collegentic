@@ -255,6 +255,24 @@ def test_recompute_readiness_refreshes_score_and_explanation_together(
     assert result[0]["readiness"]["computedAt"] is not None
 
 
+def test_recompute_readiness_skips_a_college_with_no_requirements_yet(
+    client: TestClient, user_id: str
+) -> None:
+    """Regression test: same underlying bug as readiness_agent.py's
+    CollegeReadinessContextAgent — a college with zero Requirement docs
+    (not yet researched) must not get scored at all here either, or a
+    student calling this right after adding a new college (e.g. from
+    Tasks.tsx's handleStatusChange, unrelated to that new college) would
+    persist a flat 80% placeholder for it."""
+    college_id = ft.save_college(user_id, College(name="Unresearched University"))
+    headers = {"X-User-Id": user_id}
+
+    result = client.post("/readiness/recompute", headers=headers).json()
+    assert len(result) == 1
+    assert result[0]["id"] == college_id
+    assert result[0]["readiness"]["computedAt"] is None
+
+
 def test_refresh_college_logos_updates_an_existing_college(
     client: TestClient, user_id: str
 ) -> None:
@@ -357,38 +375,328 @@ def test_create_and_list_materials(client: TestClient, user_id: str) -> None:
     assert listed[0]["id"] == created["id"]
 
 
-def test_list_essay_prompts_and_matches(client: TestClient, user_id: str) -> None:
+def test_delete_material_removes_it_and_its_match(client: TestClient, user_id: str) -> None:
+    """Essays' "Your Materials" trash icon — deleting the only material
+    behind a prompt's match should both drop the material and clean up the
+    now-stale match (see essay_matching.py's orphan cleanup), not leave a
+    match doc pointing at a material_id that no longer exists."""
+    headers = {"X-User-Id": user_id}
     college_id = ft.save_college(user_id, College(name="Rice University"))
-    [prompt_id] = ft.save_essay_prompts(
-        user_id,
-        [EssayPrompt(college_id=college_id, text="Why Rice?", word_limit=150)],
-    )
-    material_id = ft.save_student_material(
-        user_id,
-        StudentMaterial(title="Why Rice draft", type=MaterialType.SUPPLEMENTAL),
-    )
-    ft.save_essay_matches(
+    ft.save_requirements(
         user_id,
         [
-            EssayMatch(
-                prompt_id=prompt_id,
+            Requirement(
                 college_id=college_id,
-                material_id=material_id,
-                match_score=80,
-                recommendation="adapt",
-                reasoning="Strong topical overlap.",
+                type="essay",
+                description="Why do you want to attend Rice University?",
             )
         ],
     )
-    headers = {"X-User-Id": user_id}
+    material = client.post(
+        "/materials",
+        json={
+            "title": "Why Rice draft",
+            "type": "Supplemental",
+            "topic": "Notes on why do you want to attend Rice",
+        },
+        headers=headers,
+    ).json()
 
-    prompts = client.get("/essay-prompts", headers=headers).json()
-    assert len(prompts) == 1
-    assert prompts[0]["text"] == "Why Rice?"
+    assert len(client.get("/essay-matches", headers=headers).json()) == 1
+
+    res = client.delete(f"/materials/{material['id']}", headers=headers)
+    assert res.status_code == 200
+    assert res.json() == {"id": material["id"]}
+
+    assert client.get("/materials", headers=headers).json() == []
+    assert client.get("/essay-matches", headers=headers).json() == []
+
+
+def test_delete_material_missing_returns_404(client: TestClient, user_id: str) -> None:
+    res = client.delete("/materials/does-not-exist", headers={"X-User-Id": user_id})
+    assert res.status_code == 404
+
+
+def test_related_category_material_also_matches_when_exact_category_is_taken(
+    client: TestClient, user_id: str
+) -> None:
+    """A personal-statement prompt whose exact-category material is already
+    spoken for shouldn't leave a *different*, related-category material
+    (here, a genuine greatest-challenge essay — Common App's own
+    personal-statement prompt OPTIONS include a "describe a challenge you
+    overcame" choice) with zero connections on the Essay Map, *when it's a
+    genuinely close fit* (see the 10%-closeness rule — a related match
+    that's nowhere near as strong as the exact one is covered by
+    test_prompt_drops_a_much_weaker_second_match instead, and correctly
+    shows only the stronger one). Found live: a student's
+    correctly-classified "greatest obstacle/challenge" material never
+    showed up at all, because the one personal_statement requirement they
+    had already matched their personal statement material and the old code
+    only ever tried a related category as a fallback for an empty exact
+    category, never alongside a full one."""
+    headers = {"X-User-Id": user_id}
+    college_id = ft.save_college(user_id, College(name="Test University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description=(
+                    "Common App Personal Statement: tell your story, your struggle, "
+                    "your identity."
+                ),
+            )
+        ],
+    )
+    client.post(
+        "/materials",
+        json={
+            "title": "Personal Statement Draft",
+            "type": "CommonApp",
+            "topic": "Growing up bilingual",
+        },
+        headers=headers,
+    )
+    challenge_material = client.post(
+        "/materials",
+        json={
+            "title": "Overcoming a setback",
+            "type": "Supplemental",
+            "topic": (
+                "the personal side of my greatest obstacle, told in my own statement "
+                "of struggle, identity, and story"
+            ),
+        },
+        headers=headers,
+    ).json()
+
+    matches = client.get("/essay-matches", headers=headers).json()
+    assert len(matches) == 2
+    material_ids = {match["materialId"] for match in matches}
+    assert challenge_material["id"] in material_ids
+
+
+def test_related_category_match_is_capped_per_material(
+    client: TestClient, user_id: str
+) -> None:
+    """One material shouldn't "match" every prompt that shares its related
+    category — found live: a single greatest-challenge essay was the only
+    candidate for the related slot on every personal_statement prompt
+    across every tracked college (nothing else competed for that category),
+    so it ended up connected to all of them, which read as one essay
+    matching everything rather than a handful of genuinely good fits. See
+    essay_matching.py's _RELATED_MATCH_CLOSE_FRACTION — only the
+    highest-scoring related match for a given material survives, plus a
+    second only when it's a near-tie (identical prompt text here, so both
+    of these five score identically and the first two both qualify)."""
+    headers = {"X-User-Id": user_id}
+    for i in range(5):
+        college_id = ft.save_college(user_id, College(name=f"Test University {i}"))
+        ft.save_requirements(
+            user_id,
+            [
+                Requirement(
+                    college_id=college_id,
+                    type="essay",
+                    description="Personal Statement: tell your story.",
+                )
+            ],
+        )
+
+    challenge_material = client.post(
+        "/materials",
+        json={
+            "title": "Overcoming a setback",
+            "type": "Supplemental",
+            "topic": "greatest obstacle/challenge",
+        },
+        headers=headers,
+    ).json()
+
+    matches = client.get("/essay-matches", headers=headers).json()
+    challenge_matches = [m for m in matches if m["materialId"] == challenge_material["id"]]
+    assert len(challenge_matches) == 2
+
+
+def test_essay_not_reused_twice_within_the_same_college(
+    client: TestClient, user_id: str
+) -> None:
+    """An essay can legitimately be the best fit for two different prompts
+    at the same college (a why-major material is both the exact match for
+    a why_major prompt and a related-category candidate for a why_school
+    prompt there too — why_school's related list includes why_major, see
+    _RELATED_CATEGORIES) — but a student can't actually submit the same
+    essay for two different prompts at one school, so only the
+    higher-scoring of the two should survive. See
+    essay_matching.py's one-match-per-(material, college) dedup."""
+    headers = {"X-User-Id": user_id}
+    college_id = ft.save_college(user_id, College(name="Test University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why do you want to attend Test University?",
+            ),
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why do you want to study your intended major?",
+            ),
+        ],
+    )
+    material = client.post(
+        "/materials",
+        json={
+            "title": "Why Computer Science",
+            "type": "Supplemental",
+            "topic": "why this major computer science field of study",
+        },
+        headers=headers,
+    ).json()
+
+    matches = client.get("/essay-matches", headers=headers).json()
+    own_matches = [m for m in matches if m["materialId"] == material["id"]]
+    assert len(own_matches) == 1
+
+
+def test_essay_matches_only_its_single_best_prompt_at_one_college(
+    client: TestClient, user_id: str
+) -> None:
+    """Found live: a why-major essay was the exact-category candidate for
+    *four* separate why_major-labeled prompts at the same college (an
+    "undeclared" prompt, two "declared major" prompts, and a "second-choice
+    major" prompt — real UIUC supplements all landing in the same bucket),
+    and every one of them showed a connection to it, reading as one essay
+    fanning out across the whole school. Only the single best-scoring
+    prompt for that essay at that college should keep its match."""
+    headers = {"X-User-Id": user_id}
+    college_id = ft.save_college(user_id, College(name="Test University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Undeclared applicants: what are your academic interests?",
+            ),
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Declared major: explain your interest in your chosen major.",
+            ),
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Second-choice major: explain your interest in this major.",
+            ),
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Career goals: how does your intended major fit your career goals?",
+            ),
+        ],
+    )
+    material = client.post(
+        "/materials",
+        json={
+            "title": "Why Computer Science",
+            "type": "Supplemental",
+            "topic": "why this major computer science field of study",
+        },
+        headers=headers,
+    ).json()
+
+    matches = client.get("/essay-matches", headers=headers).json()
+    own_matches = [m for m in matches if m["materialId"] == material["id"]]
+    assert len(own_matches) == 1
+
+
+def test_prompt_drops_a_much_weaker_second_match(client: TestClient, user_id: str) -> None:
+    """The 10%-closeness rule applies from a prompt's side too, not just a
+    material's — found live: a prompt kept both its own strong exact match
+    (e.g. 67%) AND a much weaker related match from a completely different
+    essay (e.g. 45%), which isn't the "two decently close fits" case the
+    closeness rule is meant for. Only the stronger one should survive when
+    the gap is this big."""
+    headers = {"X-User-Id": user_id}
+    college_id = ft.save_college(user_id, College(name="Test University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Personal Statement: tell your story, your identity, your background.",
+            )
+        ],
+    )
+    strong_material = client.post(
+        "/materials",
+        json={
+            "title": "My Story",
+            "type": "CommonApp",
+            "topic": "your story your identity your background",
+        },
+        headers=headers,
+    ).json()
+    client.post(
+        "/materials",
+        json={
+            "title": "Overcoming a setback",
+            "type": "Supplemental",
+            "topic": "greatest obstacle/challenge",
+        },
+        headers=headers,
+    )
 
     matches = client.get("/essay-matches", headers=headers).json()
     assert len(matches) == 1
+    assert matches[0]["materialId"] == strong_material["id"]
+
+
+def test_list_essay_prompts_and_matches(client: TestClient, user_id: str) -> None:
+    """Requirement -> prompt -> match all the way through, not a manually
+    seeded EssayPrompt/EssayMatch pair — GET /essay-matches recomputes from
+    current Requirements/StudentMaterials before reading (see
+    list_essay_matches), so a match with no backing Requirement is exactly
+    the "stale, nothing produces it any more" case that recompute now
+    cleans up rather than something this endpoint would ever return."""
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Why do you want to attend Rice University? (150 words)",
+            )
+        ],
+    )
+    ft.save_student_material(
+        user_id,
+        StudentMaterial(
+            title="Why Rice draft",
+            type=MaterialType.SUPPLEMENTAL,
+            topic="Notes on why do you want to attend Rice",
+        ),
+    )
+    headers = {"X-User-Id": user_id}
+
+    # GET /essay-matches is what triggers recompute_essay_matches (see
+    # list_essay_matches) — it's what actually turns the Requirement above
+    # into an EssayPrompt doc, so it has to run before the /essay-prompts
+    # check below or that list is still empty.
+    matches = client.get("/essay-matches", headers=headers).json()
+    assert len(matches) == 1
     assert matches[0]["recommendation"] == "adapt"
+
+    prompts = client.get("/essay-prompts", headers=headers).json()
+    assert len(prompts) == 1
+    assert prompts[0]["text"] == "Why do you want to attend Rice University? (150 words)"
+    assert prompts[0]["wordLimit"] == 150
 
 
 def test_seed_demo_populates_the_dashboard(client: TestClient, user_id: str) -> None:

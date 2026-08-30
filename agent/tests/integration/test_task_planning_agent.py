@@ -26,7 +26,8 @@ from google.adk.runners import InMemoryRunner
 from google.genai import types
 
 from app.schemas import College, ConfidenceLevel, Requirement
-from app.sub_agents.task_planning_agent import task_planning_pipeline
+from app.sub_agents.orchestrator_agent import _with_retry
+from app.sub_agents.task_planning_agent import TaskContextAgent, task_planning_pipeline
 from app.tools import firestore_tools as ft
 
 
@@ -108,3 +109,100 @@ def test_generates_one_task_per_actionable_requirement_and_dedupes(
     tasks_after_rerun = ft.get_tasks(user_id, college_id)
     assert len(tasks_after_rerun) == 2
     assert {t.id for t in tasks_after_rerun} == {t.id for t in tasks}
+
+
+def test_task_context_agent_skips_already_planned_requirements_unless_full_replan(
+    user_id: str,
+) -> None:
+    """Regression test: task_planning_agent used to re-send EVERY tracked
+    college's requirements to the LLM on every single run, even ones that
+    already had a task — costing a bigger, slower call as more colleges
+    piled up for no benefit (a planned task's title/description never needs
+    to change on its own). TaskContextAgent must now skip requirements that
+    already have a task, UNLESS force_full_replan is set (POST
+    /tasks/replan's own escape hatch for deliberately regenerating
+    everything)."""
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Personal statement, 250-650 words.",
+                confidence=ConfidenceLevel.HIGH,
+            ),
+        ],
+    )
+    _run_task_planning(user_id)
+    assert len(ft.get_tasks(user_id, college_id)) == 1
+
+    async def _run_context_only(*, force_full_replan: bool) -> dict:
+        runner = InMemoryRunner(agent=TaskContextAgent(), app_name="test")
+        state = {"force_full_replan": True} if force_full_replan else {}
+        session = await runner.session_service.create_session(
+            app_name="test", user_id=user_id, state=state
+        )
+        async for _ in runner.run_async(
+            new_message=types.Content(
+                role="user", parts=[types.Part.from_text(text="go")]
+            ),
+            user_id=user_id,
+            session_id=session.id,
+        ):
+            pass
+        updated_session = runner.session_service.get_session_sync(
+            app_name="test", user_id=user_id, session_id=session.id
+        )
+        return updated_session.state
+
+    default_state = asyncio.run(_run_context_only(force_full_replan=False))
+    assert default_state["requirements_for_planning"] == []
+
+    full_replan_state = asyncio.run(_run_context_only(force_full_replan=True))
+    assert len(full_replan_state["requirements_for_planning"]) == 1
+
+
+def test_retry_wrapped_pipeline_produces_the_same_result(user_id: str) -> None:
+    """orchestrator_agent.py's _with_retry wraps task_planning_pipeline (and
+    priority_pipeline/readiness_pipeline) so a transient failure retries the
+    whole stage in place, invoking the wrapped agent via `agent.run_async(ctx)`
+    rather than ADK's normal declarative `sub_agents=[...]` wiring (needed
+    because task_planning_pipeline must stay unparented for
+    POST /tasks/replan to keep using it directly). On the happy path (no
+    failure at all) this must behave identically to running
+    task_planning_pipeline directly — same tasks created, nothing lost or
+    duplicated by the wrapping itself."""
+    college_id = ft.save_college(user_id, College(name="Rice University"))
+    ft.save_requirements(
+        user_id,
+        [
+            Requirement(
+                college_id=college_id,
+                type="essay",
+                description="Personal statement, 250-650 words.",
+                confidence=ConfidenceLevel.HIGH,
+            ),
+        ],
+    )
+
+    async def _go() -> None:
+        wrapped = _with_retry(task_planning_pipeline, "task_planning_pipeline")
+        runner = InMemoryRunner(agent=wrapped, app_name="test")
+        session = await runner.session_service.create_session(
+            app_name="test", user_id=user_id
+        )
+        async for _ in runner.run_async(
+            new_message=types.Content(
+                role="user", parts=[types.Part.from_text(text="go")]
+            ),
+            user_id=user_id,
+            session_id=session.id,
+        ):
+            pass
+
+    asyncio.run(_go())
+
+    tasks = ft.get_tasks(user_id, college_id)
+    assert len(tasks) == 1
+    assert tasks[0].category == "essay"

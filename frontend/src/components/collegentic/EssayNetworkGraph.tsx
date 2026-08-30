@@ -1,5 +1,15 @@
-import { useMemo, useState } from "react";
-import { cn } from "@/utils";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from "d3-force";
+import { collegeAccentColor, schoolAccentStyle } from "./CollegeAvatar";
 import type { College, EssayMatch, EssayPrompt, StudentMaterial } from "@/lib/types";
 
 interface EssayNetworkGraphProps {
@@ -9,35 +19,54 @@ interface EssayNetworkGraphProps {
   matches: EssayMatch[];
 }
 
-const NODE_HEIGHT = 44;
-const ROW_GAP = 14;
-const COLUMN_WIDTH = { college: 200, prompt: 260, material: 200 };
-const COLUMN_GAP = 90;
-const MARGIN_X = 40;
-const MARGIN_Y = 24;
+// Every real match gets a node — the old "top N" and "N per college" caps
+// both ended up hiding matches the student actually wanted to see (found
+// live: a genuinely-classified "greatest obstacle" essay just never
+// appeared because its college already had 2-3 stronger matches taking its
+// slots). This is a sanity ceiling only, nowhere near what a real account
+// hits — the actual fan-out control lives on the backend now (see
+// essay_matching.py's _RELATED_MATCH_CLOSE_FRACTION).
+const MAX_VISIBLE_MATCHES = 60;
 
-const COL_X = {
-  college: MARGIN_X,
-  prompt: MARGIN_X + COLUMN_WIDTH.college + COLUMN_GAP,
-  material:
-    MARGIN_X + COLUMN_WIDTH.college + COLUMN_GAP + COLUMN_WIDTH.prompt + COLUMN_GAP,
-};
-const GRAPH_WIDTH = COL_X.material + COLUMN_WIDTH.material + MARGIN_X;
+// Bubble sizes, spacing forces (below), and CANVAS_MARGIN were all trimmed
+// down together — found live: the force-settled layout was routinely wider
+// than the card, so render-time scale-to-fit (see `scale` below) was
+// shrinking every node well below these nominal sizes just to fit. Smaller
+// bubbles lower forceCollide's own hard floor on how close two nodes can
+// sit (not just a spacing-force tweak, an actual smaller minimum distance),
+// which is what let the tighter spacing forces below actually compact the
+// layout instead of immediately hitting that collide floor — the two only
+// compound this way if changed together. Net effect verified directly (not
+// just by inspection): a representative profile's settled layout width
+// dropped from ~950px to ~730px, meaning noticeably LESS scale-down is
+// needed to fit a typical card, so nodes render bigger on screen despite
+// their smaller nominal size.
+const PROMPT_WIDTH = 150;
+const PROMPT_HEIGHT = 72;
+const MATERIAL_WIDTH = 128;
+const MATERIAL_HEIGHT = 38;
+const CANVAS_MARGIN = 24;
+const PROMPT_RADIUS = PROMPT_WIDTH / 2 + 10;
+const MATERIAL_RADIUS = MATERIAL_WIDTH / 2 + 10;
 
-/** Total SVG height needed for `rowCount` nodes stacked with margins/gaps —
- * layoutY below distributes node centers within exactly this range, so the
- * two must stay in sync or the last row clips past the SVG's own height. */
-function graphHeight(rowCount: number): number {
-  return 2 * MARGIN_Y + rowCount * NODE_HEIGHT + Math.max(0, rowCount - 1) * ROW_GAP;
-}
+// How far apart a match's two nodes settle, continuously across the whole
+// score range — a 95% fit and a 5% fit are visibly different distances,
+// not just "at the floor" vs "drifted out" (a two-tier version of this
+// made every strong match sit at an identical distance, which read as
+// static/artificial no matter how the rest of the layout varied). A d3
+// force simulation (same idea as networkX's spring_layout: edges are
+// springs whose rest length is set here, nodes repel each other, and the
+// whole system relaxes into equilibrium) is what actually lets nodes land
+// at these distances instead of forcing them onto a fixed ring — that's
+// also what breaks up the "everything in a perfect circle" look a purely
+// radial layout always has, since a node's final position depends on
+// every match pulling on it, not just its own hub's ring math.
+const MIN_LINK_DISTANCE = 65;
+const MAX_LINK_DISTANCE = 190;
 
-/** Even vertical distribution of `count` nodes across `totalHeight`, each
- * node's full height staying within [MARGIN_Y, totalHeight - MARGIN_Y]. */
-function layoutY(index: number, count: number, totalHeight: number): number {
-  const topY = MARGIN_Y + NODE_HEIGHT / 2;
-  const bottomY = totalHeight - MARGIN_Y - NODE_HEIGHT / 2;
-  if (count <= 1) return (topY + bottomY) / 2;
-  return topY + (index / (count - 1)) * (bottomY - topY);
+function linkDistance(score: number): number {
+  const t = Math.min(1, Math.max(0, (100 - score) / 100));
+  return MIN_LINK_DISTANCE + t * (MAX_LINK_DISTANCE - MIN_LINK_DISTANCE);
 }
 
 function matchColor(score: number): string {
@@ -46,17 +75,195 @@ function matchColor(score: number): string {
   return "var(--destructive)";
 }
 
+function selectVisibleMatches(matches: EssayMatch[]): EssayMatch[] {
+  return [...matches].sort((a, b) => b.matchScore - a.matchScore).slice(0, MAX_VISIBLE_MATCHES);
+}
+
+/** The short label a prompt is actually known by — real Requirement text
+ * tends to read like `"Main Personal Statement: 'Tell us your story...'"`
+ * or `"Major-Specific Supplemental Prompt (Arts, Entertainment...)"`, and a
+ * word-limit annotation is almost always parenthetical too (`"...(150
+ * words)"`). Cutting at the first `:` or `(` keeps just the label a student
+ * would actually call this prompt — concise on purpose, the bubble has no
+ * room for the quoted prompt text itself (hover still shows it in full via
+ * the node's native title). Text with neither delimiter (a short prompt
+ * with no label prefix) is kept as-is; line-clamp in the bubble handles it. */
+function promptLabel(text: string): string {
+  const cut = text.search(/[:(]/);
+  const label = cut === -1 ? text : text.slice(0, cut);
+  return label.trim() || text.trim();
+}
+
+interface GraphNode extends SimulationNodeDatum {
+  id: string;
+  radius: number;
+  kind: "prompt" | "material";
+}
+
+interface GraphLink extends SimulationLinkDatum<GraphNode> {
+  match: EssayMatch;
+}
+
+interface Layout {
+  width: number;
+  height: number;
+  positions: Map<string, { x: number; y: number }>;
+}
+
+// Two materials never share an edge (matches only ever run material <->
+// prompt), so `forceManyBody`'s uniform repulsion is the only thing
+// keeping them apart — not nearly enough once both have several matches
+// pulling them toward the same neighborhood of prompts, which is exactly
+// what read as "one big cluster" (found live: personal statement and
+// greatest-challenge essays, each with their own prompts, still ended up
+// nearly on top of each other). A dedicated force that only pushes
+// material nodes away from *other* material nodes (ignored below this
+// distance) fixes that specifically, without changing how tightly a
+// prompt sits to the material it's actually connected to.
+const MATERIAL_SEPARATION = 160;
+
+function materialSeparationForce(nodes: GraphNode[]) {
+  const materials = nodes.filter((n) => n.kind === "material");
+  return (alpha: number) => {
+    for (let i = 0; i < materials.length; i++) {
+      for (let j = i + 1; j < materials.length; j++) {
+        const a = materials[i];
+        const b = materials[j];
+        const dx = (b.x ?? 0) - (a.x ?? 0);
+        const dy = (b.y ?? 0) - (a.y ?? 0);
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+        if (dist >= MATERIAL_SEPARATION) continue;
+        const push = ((MATERIAL_SEPARATION - dist) / dist) * alpha * 0.6;
+        const ox = dx * push;
+        const oy = dy * push;
+        a.x = (a.x ?? 0) - ox;
+        a.y = (a.y ?? 0) - oy;
+        b.x = (b.x ?? 0) + ox;
+        b.y = (b.y ?? 0) + oy;
+      }
+    }
+  };
+}
+
+/** Runs a force simulation (nodes repel each other via `forceManyBody`,
+ * `forceCollide` keeps bubbles from overlapping, matched pairs are pulled
+ * toward `linkDistance(score)` apart via `forceLink`) to equilibrium
+ * synchronously — this isn't an animated graph, so ticking it out fully up
+ * front and using the settled positions is simpler than driving a
+ * requestAnimationFrame loop for something that has to be readable the
+ * instant it renders. Initial positions are seeded on a deterministic ring
+ * (by index, not Math.random) purely so the simulation has somewhere to
+ * start from — the actual final layout comes entirely from the physics,
+ * not the seed. */
+function layoutGraph(
+  promptNodes: { id: string }[],
+  materialNodes: { id: string }[],
+  links: { source: string; target: string; match: EssayMatch }[]
+): Layout {
+  const nodes: GraphNode[] = [
+    ...promptNodes.map((p) => ({ id: p.id, radius: PROMPT_RADIUS, kind: "prompt" as const })),
+    ...materialNodes.map((m) => ({ id: m.id, radius: MATERIAL_RADIUS, kind: "material" as const })),
+  ];
+  const seedRadius = Math.max(200, nodes.length * 22);
+  nodes.forEach((node, i) => {
+    const angle = (2 * Math.PI * i) / Math.max(1, nodes.length);
+    node.x = seedRadius * Math.cos(angle);
+    node.y = seedRadius * Math.sin(angle);
+  });
+
+  const simLinks: GraphLink[] = links.map((l) => ({
+    source: l.source,
+    target: l.target,
+    match: l.match,
+  }));
+
+  if (nodes.length === 0) {
+    return { width: 0, height: 0, positions: new Map() };
+  }
+
+  const simulation = forceSimulation(nodes)
+    // Less mutual repulsion than before — the whole point of this pass is a
+    // denser layout: less repulsion means less distance for forceX/forceY
+    // to have to fight down to zero once collide+link settle, so the graph
+    // relaxes into a visibly tighter cluster instead of a wide-open one
+    // scale-to-fit then has to shrink hard to make room for.
+    .force("charge", forceManyBody().strength(-140))
+    .force(
+      "link",
+      forceLink<GraphNode, GraphLink>(simLinks)
+        .id((d) => d.id)
+        .distance((d) => linkDistance(d.match.matchScore))
+        .strength(0.9)
+    )
+    .force("collide", forceCollide<GraphNode>().radius((d) => d.radius).strength(1))
+    // Pulling harder toward center horizontally than vertically still
+    // biases the whole graph toward a taller, narrower shape (nodes that
+    // don't have to stack side by side stack top to bottom instead, which
+    // keeps this fitting the card's width — see the render-time
+    // scale-to-fit below). But too weak a vertical pull leaves a
+    // lightly-connected sub-cluster (an essay with just one or two
+    // matches, nothing tying it back to the rest of the graph) drifting
+    // far enough from everything else to read as empty space, not just a
+    // taller layout — found live, a "why this major" essay's own small
+    // cluster sat with a visible gap above the rest of the map. Strong
+    // enough to close that gap, still well under the horizontal pull so
+    // the shape doesn't go back to wide. Both raised alongside the lower
+    // charge/link/separation values above, so the extra pull-to-center
+    // compounds with the reduced repulsion rather than just compensating
+    // for it back to the same size.
+    .force("x", forceX(0).strength(0.08))
+    .force("y", forceY(0).strength(0.05))
+    .force("materialSeparation", materialSeparationForce(nodes))
+    .stop();
+
+  for (let i = 0; i < 400; i++) simulation.tick();
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const node of nodes) {
+    const x = node.x ?? 0;
+    const y = node.y ?? 0;
+    minX = Math.min(minX, x - node.radius);
+    maxX = Math.max(maxX, x + node.radius);
+    minY = Math.min(minY, y - node.radius);
+    maxY = Math.max(maxY, y + node.radius);
+  }
+
+  const offsetX = CANVAS_MARGIN - minX;
+  const offsetY = CANVAS_MARGIN - minY;
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const node of nodes) {
+    positions.set(node.id, { x: (node.x ?? 0) + offsetX, y: (node.y ?? 0) + offsetY });
+  }
+
+  return {
+    width: maxX - minX + CANVAS_MARGIN * 2,
+    height: maxY - minY + CANVAS_MARGIN * 2,
+    positions,
+  };
+}
+
 /**
- * A hand-rolled SVG network view rather than a charting dependency — the
- * graph is small (colleges/prompts/materials for one student), so a plain
- * three-column layout with `foreignObject` node labels keeps this
- * dependency-free and fully themeable, consistent with the rest of the app
- * (no visualization library elsewhere in package.json).
+ * A hand-rolled SVG force-directed graph rather than a charting dependency
+ * beyond d3-force itself (small, headless — it computes positions only, no
+ * rendering/DOM opinions of its own) — the graph is small (a handful of
+ * matches for one student), so this stays fully themeable and consistent
+ * with the rest of the app while getting real physics-based layout instead
+ * of hand-rolled ring math. Same idea as networkX's spring_layout: every
+ * EssayMatch is a spring between its prompt and material node, whose rest
+ * length encodes the match score (see linkDistance) — a strong fit settles
+ * close, a weak one settles far, continuously, not in two visual tiers.
+ * Nodes that aren't connected to each other repel, so unrelated
+ * prompt/material pairs never drift near enough to look connected.
  *
- * Three node types, per EssayMap's own spec: College -> Essay Prompt
- * (structural, thin line) -> Student Material (an EssayMatch — line
- * thickness AND color both encode match strength, redundant encoding for
- * legibility, same 70/40 thresholds as ReadinessCard/PriorityBadge).
+ * A prompt bubble is still color-coded to its own college (see
+ * CollegeAvatar's collegeAccentColor) with the school's name on it — that
+ * identity doesn't drive placement, only its match distances do. A line
+ * from material to prompt is an EssayMatch: thickness AND color both
+ * encode match strength (redundant encoding for legibility, same 70/40
+ * thresholds as ReadinessCard/PriorityBadge).
  */
 export function EssayNetworkGraph({
   colleges,
@@ -65,146 +272,247 @@ export function EssayNetworkGraph({
   matches,
 }: EssayNetworkGraphProps) {
   const [hovered, setHovered] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
 
-  const rowCount = Math.max(colleges.length, prompts.length, materials.length, 1);
-  const height = graphHeight(rowCount);
+  // The graph's natural (force-settled) size is whatever the physics needs
+  // — often wider than the card. Scaling the whole thing down to fit the
+  // card's actual width (see `scale` below) is what keeps every node on
+  // screen with no horizontal scrollbar, instead of clipping or requiring
+  // a scroll to see the rest of the map.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) setContainerWidth(width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
-  const collegeY = useMemo(
-    () => Object.fromEntries(colleges.map((c, i) => [c.id, layoutY(i, colleges.length, height)])),
-    [colleges, height]
+  // `materials`/`matches` come from two separate fetches (see Essays.tsx's
+  // handleDeleteMaterial: `materials` updates synchronously, `matches` only
+  // catches up once its own refetch resolves) — for one render after a
+  // delete, `matches` can still reference a materialId that's already gone
+  // from `materials`. Grounding against the CURRENT id sets before a match
+  // is ever used to build a d3-force link is what stops that stale
+  // reference from reaching forceLink at all. Found live: forceLink's own
+  // `find()` throws a synchronous "node not found" the instant a link
+  // points at an id missing from `nodes` — an uncaught render-time
+  // exception with no recovery but a full reload. Same "never trust a
+  // reference id without confirming the referenced thing still exists"
+  // discipline the backend already applies to LLM-emitted ids (see e.g.
+  // conflict_agent.py/essay_matching_agent.py), just applied here against
+  // ordinary fetch staleness instead.
+  const materialIds = useMemo(() => new Set(materials.map((m) => m.id)), [materials]);
+  const promptIds = useMemo(() => new Set(prompts.map((p) => p.id)), [prompts]);
+  const groundedMatches = useMemo(
+    () => matches.filter((m) => materialIds.has(m.materialId) && promptIds.has(m.promptId)),
+    [matches, materialIds, promptIds]
   );
-  const promptY = useMemo(
-    () => Object.fromEntries(prompts.map((p, i) => [p.id, layoutY(i, prompts.length, height)])),
-    [prompts, height]
+
+  // Only a fair, capped slice of matches makes the map at all (see
+  // selectVisibleMatches) — a prompt or material with no match among them
+  // just isn't drawn, same "no connection yet = not worth showing" idea as
+  // before, now also the mechanism that keeps a big college list legible
+  // without starving any one school out of the map entirely.
+  const visibleMatches = useMemo(() => selectVisibleMatches(groundedMatches), [groundedMatches]);
+  const visiblePromptIds = useMemo(
+    () => new Set(visibleMatches.map((m) => m.promptId)),
+    [visibleMatches]
   );
-  const materialY = useMemo(
+  const visibleMaterialIds = useMemo(
+    () => new Set(visibleMatches.map((m) => m.materialId)),
+    [visibleMatches]
+  );
+  // A prompt can have more than one match now — its own category plus any
+  // related one (see essay_matching.py's recompute_essay_matches) — so a
+  // hovered prompt's detail popover lists all of them, strongest first.
+  const matchesByPrompt = useMemo(() => {
+    const map = new Map<string, EssayMatch[]>();
+    for (const match of visibleMatches) {
+      const list = map.get(match.promptId);
+      if (list) list.push(match);
+      else map.set(match.promptId, [match]);
+    }
+    for (const list of map.values()) list.sort((a, b) => b.matchScore - a.matchScore);
+    return map;
+  }, [visibleMatches]);
+  const materialById = useMemo(
+    () => Object.fromEntries(materials.map((m) => [m.id, m])),
+    [materials]
+  );
+  const collegeById = useMemo(() => Object.fromEntries(colleges.map((c) => [c.id, c])), [colleges]);
+  const visiblePrompts = useMemo(
+    () => prompts.filter((p) => visiblePromptIds.has(p.id)),
+    [prompts, visiblePromptIds]
+  );
+  const visibleMaterials = useMemo(
+    () => materials.filter((m) => visibleMaterialIds.has(m.id)),
+    [materials, visibleMaterialIds]
+  );
+
+  const layout = useMemo(
     () =>
-      Object.fromEntries(materials.map((m, i) => [m.id, layoutY(i, materials.length, height)])),
-    [materials, height]
+      layoutGraph(
+        visiblePrompts.map((p) => ({ id: p.id })),
+        visibleMaterials.map((m) => ({ id: m.id })),
+        visibleMatches.map((match) => ({
+          source: match.materialId,
+          target: match.promptId,
+          match,
+        }))
+      ),
+    [visiblePrompts, visibleMaterials, visibleMatches]
   );
+  const scale =
+    containerWidth > 0 && layout.width > 0 ? Math.min(1, containerWidth / layout.width) : 1;
 
-  if (prompts.length === 0 && materials.length === 0) {
+  if (visiblePrompts.length === 0 && visibleMaterials.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        Add colleges (for essay prompts) and materials to see how they
-        connect.
+        {materials.length === 0
+          ? "Add materials to see how they connect."
+          : "None of your materials share a category with a college's essay prompt yet. Try editing one from My Progress, or add a new one for that category."}
       </p>
     );
   }
 
+  // Hovering a prompt node (not a material one) surfaces its match detail
+  // right there instead of a separate "Suggested Matches" table — `hovered`
+  // only ever equals a prompt's own id while a prompt node is moused over
+  // (see Node's onMouseEnter below), so this is naturally empty otherwise.
+  const hoveredPrompt = visiblePrompts.find((p) => p.id === hovered);
+  const hoveredMatches = hoveredPrompt ? matchesByPrompt.get(hoveredPrompt.id) : undefined;
+  const hoveredPromptPos = hoveredPrompt ? layout.positions.get(hoveredPrompt.id) : undefined;
+
   return (
     <div className="space-y-3">
-      <div className="overflow-x-auto rounded-lg border border-border bg-card">
-        <svg
-          width={GRAPH_WIDTH}
-          height={height}
-          viewBox={`0 0 ${GRAPH_WIDTH} ${height}`}
-          className="block"
-          style={{ minWidth: GRAPH_WIDTH }}
+      {/* No horizontal scroll — the whole graph is scaled down (via CSS
+          transform, so the SVG *and* the HTML tooltip inside it stay in
+          sync) to fit the card's actual width, see `scale` above. The
+          outer ref div is what ResizeObserver measures; its height is
+          pinned to the *scaled* size so the shrunk content doesn't leave
+          blank space below it. */}
+      <div ref={containerRef} className="overflow-hidden rounded-md border border-border/60">
+        <div
+          className="relative mx-auto"
+          style={{ width: layout.width * scale, height: layout.height * scale }}
         >
-          {/* College -> Prompt structural connectors */}
-          {prompts.map((prompt) => {
-            const cy = collegeY[prompt.collegeId];
-            const py = promptY[prompt.id];
-            if (cy === undefined) return null;
-            return (
-              <line
-                key={`college-${prompt.id}`}
-                x1={COL_X.college + COLUMN_WIDTH.college}
-                y1={cy}
-                x2={COL_X.prompt}
-                y2={py}
-                stroke="var(--border)"
-                strokeWidth={1}
-                opacity={hovered && hovered !== prompt.id && hovered !== prompt.collegeId ? 0.15 : 0.6}
+          <div
+            style={{
+              width: layout.width,
+              height: layout.height,
+              transform: `scale(${scale})`,
+              transformOrigin: "top left",
+            }}
+          >
+            <svg
+              width={layout.width}
+              height={layout.height}
+              viewBox={`0 0 ${layout.width} ${layout.height}`}
+              className="block"
+            >
+              {/* Material -> Prompt match edges */}
+              {visibleMatches.map((match) => {
+                const mp = layout.positions.get(match.materialId);
+                const pp = layout.positions.get(match.promptId);
+                if (!mp || !pp) return null;
+                const dimmed =
+                  hovered !== null && hovered !== match.promptId && hovered !== match.materialId;
+                return (
+                  <line
+                    key={match.id}
+                    x1={mp.x}
+                    y1={mp.y}
+                    x2={pp.x}
+                    y2={pp.y}
+                    stroke={matchColor(match.matchScore)}
+                    strokeWidth={1 + (match.matchScore / 100) * 5}
+                    opacity={dimmed ? 0.15 : 0.85}
+                  />
+                );
+              })}
+
+              {/* Prompt bubbles */}
+              {visiblePrompts.map((prompt) => {
+                const pos = layout.positions.get(prompt.id);
+                const college = collegeById[prompt.collegeId];
+                if (!pos || !college) return null;
+                const accent = collegeAccentColor(college);
+                return (
+                  <Node
+                    key={prompt.id}
+                    x={pos.x}
+                    y={pos.y}
+                    width={PROMPT_WIDTH}
+                    height={PROMPT_HEIGHT}
+                    onHover={setHovered}
+                    id={prompt.id}
+                    title={`${college.name}: ${prompt.text}`}
+                  >
+                    <div
+                      className="school-tint flex h-full w-full flex-col overflow-hidden rounded-xl border-2 shadow-sm"
+                      style={{ borderColor: accent, ...schoolAccentStyle(college) }}
+                    >
+                      <div
+                        className="line-clamp-2 px-2.5 pt-1.5 text-[10px] font-bold uppercase leading-tight tracking-wide"
+                        style={{ color: accent }}
+                      >
+                        {college.name}
+                      </div>
+                      <div className="flex-1 overflow-hidden px-2.5 pb-1.5 pt-0.5 text-[11px] font-medium leading-tight text-foreground">
+                        <span className="line-clamp-2">{promptLabel(prompt.text)}</span>
+                      </div>
+                    </div>
+                  </Node>
+                );
+              })}
+
+              {/* Material bubbles */}
+              {visibleMaterials.map((material) => {
+                const pos = layout.positions.get(material.id);
+                if (!pos) return null;
+                return (
+                  <Node
+                    key={material.id}
+                    x={pos.x}
+                    y={pos.y}
+                    width={MATERIAL_WIDTH}
+                    height={MATERIAL_HEIGHT}
+                    onHover={setHovered}
+                    id={material.id}
+                    title={material.title}
+                  >
+                    <div
+                      className="school-tint flex h-full w-full items-center justify-center overflow-hidden rounded-full border-2 border-orange/40 px-3 shadow-sm"
+                      style={{ "--school-accent": "var(--orange)" } as React.CSSProperties}
+                    >
+                      <span className="truncate text-center text-xs font-medium text-foreground">
+                        {material.title}
+                      </span>
+                    </div>
+                  </Node>
+                );
+              })}
+            </svg>
+
+            {hoveredPrompt && hoveredMatches && hoveredPromptPos && (
+              <PromptMatchTooltip
+                x={hoveredPromptPos.x}
+                y={hoveredPromptPos.y}
+                canvasWidth={layout.width}
+                canvasHeight={layout.height}
+                matches={hoveredMatches}
+                materialById={materialById}
               />
-            );
-          })}
-
-          {/* Prompt -> Material match edges */}
-          {matches.map((match) => {
-            const py = promptY[match.promptId];
-            const my = materialY[match.materialId];
-            if (py === undefined || my === undefined) return null;
-            const dimmed =
-              hovered !== null && hovered !== match.promptId && hovered !== match.materialId;
-            return (
-              <line
-                key={match.id}
-                x1={COL_X.prompt + COLUMN_WIDTH.prompt}
-                y1={py}
-                x2={COL_X.material}
-                y2={my}
-                stroke={matchColor(match.matchScore)}
-                strokeWidth={1 + (match.matchScore / 100) * 5}
-                opacity={dimmed ? 0.15 : 0.85}
-              />
-            );
-          })}
-
-          {/* College nodes */}
-          {colleges.map((college) => (
-            <Node
-              key={college.id}
-              x={COL_X.college}
-              y={collegeY[college.id]}
-              width={COLUMN_WIDTH.college}
-              onHover={setHovered}
-              id={college.id}
-              title={college.name}
-              className="border-navy/30 bg-navy/5"
-            >
-              <span className="text-sm font-medium text-foreground truncate block">
-                {college.name}
-              </span>
-            </Node>
-          ))}
-
-          {/* Prompt nodes */}
-          {prompts.map((prompt) => (
-            <Node
-              key={prompt.id}
-              x={COL_X.prompt}
-              y={promptY[prompt.id]}
-              width={COLUMN_WIDTH.prompt}
-              onHover={setHovered}
-              id={prompt.id}
-              title={prompt.text}
-              className="border-border bg-secondary/50"
-            >
-              <span className="text-xs text-foreground line-clamp-2 leading-tight">
-                {prompt.text}
-                {prompt.wordLimit && (
-                  <span className="text-muted-foreground"> ({prompt.wordLimit}w)</span>
-                )}
-              </span>
-            </Node>
-          ))}
-
-          {/* Material nodes */}
-          {materials.map((material) => (
-            <Node
-              key={material.id}
-              x={COL_X.material}
-              y={materialY[material.id]}
-              width={COLUMN_WIDTH.material}
-              onHover={setHovered}
-              id={material.id}
-              title={material.title}
-              className="border-orange/30 bg-orange-tint"
-            >
-              <span className="text-sm font-medium text-foreground truncate block">
-                {material.title}
-              </span>
-            </Node>
-          ))}
-        </svg>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 bg-border" /> College → prompt
-        </span>
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-1 w-4 rounded-full" style={{ background: "var(--success)" }} />
           Strong reuse fit
@@ -212,10 +520,6 @@ export function EssayNetworkGraph({
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-1 w-4 rounded-full" style={{ background: "var(--warning)" }} />
           Partial fit
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-1 w-4 rounded-full" style={{ background: "var(--destructive)" }} />
-          Weak fit
         </span>
       </div>
     </div>
@@ -226,27 +530,81 @@ interface NodeProps {
   x: number;
   y: number;
   width: number;
+  height: number;
   id: string;
   title?: string;
-  className?: string;
   onHover: (id: string | null) => void;
   children: React.ReactNode;
 }
 
-function Node({ x, y, width, id, title, className, onHover, children }: NodeProps) {
+function Node({ x, y, width, height, id, title, onHover, children }: NodeProps) {
   return (
     <g onMouseEnter={() => onHover(id)} onMouseLeave={() => onHover(null)}>
       {title && <title>{title}</title>}
-      <foreignObject x={x} y={y - NODE_HEIGHT / 2} width={width} height={NODE_HEIGHT}>
-        <div
-          className={cn(
-            "h-full w-full rounded-md border px-2.5 py-1.5 flex items-center overflow-hidden",
-            className
-          )}
-        >
-          {children}
-        </div>
+      <foreignObject x={x - width / 2} y={y - height / 2} width={width} height={height}>
+        <div className="h-full w-full">{children}</div>
       </foreignObject>
     </g>
+  );
+}
+
+const TOOLTIP_WIDTH = 240;
+
+interface PromptMatchTooltipProps {
+  x: number;
+  y: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  matches: EssayMatch[];
+  materialById: Record<string, StudentMaterial>;
+}
+
+/**
+ * Replaces the old standalone "Suggested Matches" table — hovering a
+ * prompt bubble is now the only place to see its match detail, right next
+ * to the connection(s) it explains instead of a separate list to
+ * cross-reference. A prompt can have more than one match now (its own
+ * category plus a related one — see essay_matching.py), so this lists all
+ * of them, strongest first. Force layout puts bubbles anywhere on the
+ * canvas (not just around fixed hubs), so this clamps horizontally to the
+ * canvas bounds and flips above/below based on which half of the canvas
+ * the bubble sits in, rather than a single fixed offset direction.
+ */
+function PromptMatchTooltip({
+  x,
+  y,
+  canvasWidth,
+  canvasHeight,
+  matches,
+  materialById,
+}: PromptMatchTooltipProps) {
+  const left = Math.min(Math.max(x - TOOLTIP_WIDTH / 2, 8), canvasWidth - TOOLTIP_WIDTH - 8);
+  const placeAbove = y > canvasHeight / 2;
+  return (
+    <div
+      className="absolute z-10 divide-y divide-border rounded-md border border-border bg-popover p-3 text-xs shadow-lg pointer-events-none"
+      style={{
+        left,
+        width: TOOLTIP_WIDTH,
+        top: placeAbove ? undefined : y + PROMPT_HEIGHT / 2 + 10,
+        bottom: placeAbove ? canvasHeight - (y - PROMPT_HEIGHT / 2 - 10) : undefined,
+      }}
+    >
+      {matches.map((match) => {
+        const material = materialById[match.materialId];
+        if (!material) return null;
+        return (
+          <div key={match.id} className="py-1.5 first:pt-0 last:pb-0">
+            <p className="font-medium text-popover-foreground">
+              {Math.round(match.matchScore)}% fit with {material.title}
+            </p>
+            <p className="mt-1 font-medium" style={{ color: matchColor(match.matchScore) }}>
+              {match.recommendation === "adapt" ? "Adapt existing" : "Write new"}
+            </p>
+            <p className="mt-1 text-muted-foreground">{match.reasoning}</p>
+          </div>
+        );
+      })}
+    </div>
   );
 }

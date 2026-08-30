@@ -165,6 +165,11 @@ def test_multiple_colleges_are_researched_concurrently(
     assert progress is not None
     assert progress.total_colleges == 2
     assert progress.completed_colleges == 2
+    # college_intake_pipeline's stage-marker steps must have flipped this to
+    # "done" by the time task_planning/priority/readiness all finish, not
+    # left it stuck on "researching" once every college's own research is
+    # done — see PipelineProgress.stage's docstring.
+    assert progress.stage == "done"
 
     runs = ft.get_agent_runs(user_id)
     research_runs = sorted(

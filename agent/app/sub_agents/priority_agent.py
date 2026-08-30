@@ -43,7 +43,7 @@ from google.adk.events import Event, EventActions
 from pydantic import BaseModel, Field
 
 from app.callbacks import log_agent_run_complete, log_agent_run_start
-from app.config import config
+from app.config import config, llm_timeout_config
 from app.schemas import TaskStatus
 from app.tools import firestore_tools as ft
 from app.tools.scoring import compute_priority_score, resolve_effective_deadline
@@ -148,6 +148,18 @@ def _persist_priorities(callback_context) -> None:
 
 priority_explanation_agent = LlmAgent(
     model=config.worker_model,
+    # `batched=True`, not the plain (45s) timeout: this call batches EVERY
+    # non-Done task's explanation into one Gemini call regardless of count
+    # (see module docstring), same shape as readiness/essay/conflict's own
+    # batched calls — all of which already use this longer timeout. Found
+    # live: with the plain 45s timeout, a student tracking several colleges
+    # (15-25+ open tasks) reliably hit 504 DEADLINE_EXCEEDED here, and since
+    # this stage sits ahead of readiness_pipeline/cross_college_analysis in
+    # college_intake_pipeline, that timeout aborted the ENTIRE rest of the
+    # run — Readiness and Cross-College Conflicts (via conflict_pipeline)
+    # never got a chance to run either, for a reason that had nothing to do
+    # with either of them.
+    generate_content_config=llm_timeout_config(batched=True),
     name="priority_explanation_agent",
     description="Writes natural-language explanations for pre-computed task priority scores.",
     instruction=_PRIORITY_EXPLANATION_INSTRUCTION,

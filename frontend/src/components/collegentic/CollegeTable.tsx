@@ -1,16 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, ChevronRight, Loader2, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  ChevronRight,
+  Loader2,
+  Trash2,
+} from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 import { CollegeAvatar, collegeAccentColor, schoolAccentStyle } from "./CollegeAvatar";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatDateShort, daysUntil } from "@/lib/format";
 import { cn } from "@/utils";
-import type { College, Readiness, Requirement } from "@/lib/types";
+import type { College, CollegeStatus, Readiness, Requirement } from "@/lib/types";
 
 interface CollegeTableProps {
   colleges: College[];
   requirementsByCollege: Record<string, Requirement[]>;
+  /** Which colleges have at least one planned task — gates the Readiness
+   * column (see ReadinessCell) so a score never appears before Tasks does. */
+  collegeIdsWithTasks: Set<string>;
   /** Deletes a college and everything derived from researching it (see
    * api.ts's deleteCollege) and refetches — the row disappears on its own
    * once `colleges` no longer includes it. This component only owns the
@@ -90,6 +101,61 @@ function DeleteCell({
 const HEADER_CELL = "px-3 py-2 font-medium whitespace-nowrap";
 const BODY_CELL = "px-3 py-3 align-middle";
 
+type SortKey = "name" | "status" | "ea" | "ed" | "rd" | "financialAid";
+type SortDirection = "asc" | "desc";
+
+// The order applications actually move through — .agents-cli-spec.md's own
+// status lifecycle — not alphabetical, so "sort by status" reads as "how far
+// along," the thing a student actually wants to scan for.
+const STATUS_ORDER: Record<CollegeStatus, number> = {
+  Planning: 0,
+  InProgress: 1,
+  Ready: 2,
+  Submitted: 3,
+};
+
+function compareDeadline(a: string | null, b: string | null, dir: SortDirection): number {
+  // Colleges with no deadline on file yet sort to the bottom regardless of
+  // direction — flipping to descending should surface the soonest-crunch
+  // deadlines first, not bury them under a pile of unresearched "-" rows.
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  const delta = new Date(a).getTime() - new Date(b).getTime();
+  return dir === "asc" ? delta : -delta;
+}
+
+function SortableHeader({
+  label,
+  active,
+  direction,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 hover:text-navy-foreground/80"
+    >
+      {label}
+      {active ? (
+        direction === "asc" ? (
+          <ArrowUp className="h-3 w-3" />
+        ) : (
+          <ArrowDown className="h-3 w-3" />
+        )
+      ) : (
+        <ArrowUpDown className="h-3 w-3 opacity-40" />
+      )}
+    </button>
+  );
+}
+
 const TONE_TEXT = {
   success: "text-success",
   warning: "text-warning",
@@ -135,8 +201,21 @@ function DeadlineCell({ iso, active }: { iso: string | null; active: boolean }) 
 
 // Fake count never reaches this — real data always swaps in first in
 // practice, but capping short of it means even a slow real response can't
-// make the fake count and the real one collide/overshoot on screen.
-const _FAKE_REQUIREMENTS_CAP = 11;
+// make the fake count and the real one collide/overshoot on screen. A
+// random cap per college (not a single fixed number) — every college
+// stalling at exactly the same "11 tracked" is itself a tell that it's
+// fake, same reasoning as the irregular tick delay below.
+const _FAKE_REQUIREMENTS_CAP_MIN = 7;
+const _FAKE_REQUIREMENTS_CAP_MAX = 12;
+
+// Module-level, keyed by college id, so a college's fake progress survives
+// navigating away and back — CollegeTable (and this cell) fully remounts on
+// that round trip, which would otherwise reset React state back to count=1
+// and visibly restart the climb, itself another tell that it's fake. A
+// plain module-level Map (not localStorage/backend state) is enough since
+// it only needs to survive for the current tab's session; it naturally goes
+// away on reload as the college transitions to its real, final count.
+const _fakeRequirementsProgress = new Map<string, { count: number; cap: number }>();
 
 /**
  * Shown in the Requirements cell once deadlines are done and
@@ -151,17 +230,27 @@ const _FAKE_REQUIREMENTS_CAP = 11;
  * "Researching…" the entire time, then the real count appearing all at
  * once), this fakes a plausible "still finding things" climb entirely
  * client-side, in the same "N tracked" shape the real final label uses —
- * a count from 1 up to _FAKE_REQUIREMENTS_CAP, occasionally skipping a
- * number, with irregular pauses between ticks (never a smooth/linear
- * climb, which reads as fake in a different way). The count is fake —
- * nobody has actually found "6 requirements" at that moment — but reads
- * far more like real incremental progress than an unlabeled bar alone.
- * Replaced outright, the instant real data arrives, by the actual
+ * a count from 1 up to this college's own random cap, occasionally
+ * skipping a number, with irregular pauses between ticks (never a
+ * smooth/linear climb, which reads as fake in a different way). The count
+ * is fake — nobody has actually found "6 requirements" at that moment —
+ * but reads far more like real incremental progress than an unlabeled bar
+ * alone. Replaced outright, the instant real data arrives, by the actual
  * "N tracked" count one tier up in CollegeTable's render — this component
  * never learns or shows a real number itself.
  */
-function FakeRequirementsProgressCell() {
-  const [count, setCount] = useState(1);
+function FakeRequirementsProgressCell({ collegeId }: { collegeId: string }) {
+  const [, forceRender] = useState(0);
+  const stateRef = useRef<{ count: number; cap: number } | null>(null);
+  if (!stateRef.current) {
+    stateRef.current = _fakeRequirementsProgress.get(collegeId) ?? {
+      count: 1,
+      cap:
+        _FAKE_REQUIREMENTS_CAP_MIN +
+        Math.floor(Math.random() * (_FAKE_REQUIREMENTS_CAP_MAX - _FAKE_REQUIREMENTS_CAP_MIN + 1)),
+    };
+    _fakeRequirementsProgress.set(collegeId, stateRef.current);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -172,14 +261,15 @@ function FakeRequirementsProgressCell() {
       const delay = 900 + Math.random() * 1900;
       timeoutId = setTimeout(() => {
         if (cancelled) return;
-        setCount((c) => {
-          if (c >= _FAKE_REQUIREMENTS_CAP) return c;
+        const state = stateRef.current!;
+        if (state.count < state.cap) {
           // Skip a number sometimes (+2) rather than always +1 — a
           // perfectly steady 1,2,3,4... climb reads as an animation, not
           // as things being found one at a time.
           const step = Math.random() < 0.4 ? 2 : 1;
-          return Math.min(_FAKE_REQUIREMENTS_CAP, c + step);
-        });
+          state.count = Math.min(state.cap, state.count + step);
+          forceRender((n) => n + 1);
+        }
         scheduleTick();
       }, delay);
     }
@@ -190,10 +280,11 @@ function FakeRequirementsProgressCell() {
     };
   }, []);
 
+  const { count, cap } = stateRef.current;
   // +2 headroom so even the capped count never visually fills the bar —
   // same "must never look finished before the real count swaps in" reason
   // the count itself is capped short of any plausible real total.
-  const fraction = count / (_FAKE_REQUIREMENTS_CAP + 2);
+  const fraction = count / (cap + 2);
 
   return (
     <div className="flex items-center gap-2" title="Finding requirements…">
@@ -208,8 +299,10 @@ function FakeRequirementsProgressCell() {
   );
 }
 
-function ReadinessCell({ readiness }: { readiness: Readiness }) {
-  if (readiness.computedAt === null) {
+function ReadinessCell({ readiness, hasTasks }: { readiness: Readiness; hasTasks: boolean }) {
+  // Withhold the score until this college has planned tasks — see
+  // ReadinessCard's matching guard for why.
+  if (readiness.computedAt === null || !hasTasks) {
     return <span className="text-muted-foreground">Not scored yet</span>;
   }
   const score = Math.round(readiness.score);
@@ -255,40 +348,118 @@ function ReadinessCell({ readiness }: { readiness: Readiness }) {
 export function CollegeTable({
   colleges,
   requirementsByCollege,
+  collegeIdsWithTasks,
   onDelete,
 }: CollegeTableProps) {
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+
+  function handleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDirection("asc");
+    }
+  }
+
+  const sortedColleges = useMemo(() => {
+    if (sortKey === null) return colleges;
+    const dir = sortDirection === "asc" ? 1 : -1;
+    return [...colleges].sort((a, b) => {
+      switch (sortKey) {
+        case "name":
+          return dir * a.name.localeCompare(b.name);
+        case "status":
+          return dir * (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
+        case "ea":
+          return compareDeadline(a.deadlines.ea, b.deadlines.ea, sortDirection);
+        case "ed":
+          return compareDeadline(a.deadlines.ed, b.deadlines.ed, sortDirection);
+        case "rd":
+          return compareDeadline(a.deadlines.rd, b.deadlines.rd, sortDirection);
+        case "financialAid":
+          return compareDeadline(a.deadlines.financialAid, b.deadlines.financialAid, sortDirection);
+      }
+    });
+  }, [colleges, sortKey, sortDirection]);
+
   return (
     <div className="overflow-x-auto rounded-lg border border-border shadow-sm">
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-navy text-navy-foreground text-left text-xs uppercase tracking-wide divide-x divide-navy-foreground/15">
-            <th rowSpan={2} className={HEADER_CELL}>
-              College
+            <th rowSpan={2} className={cn(HEADER_CELL, "rounded-tl-lg")}>
+              <SortableHeader
+                label="College"
+                active={sortKey === "name"}
+                direction={sortDirection}
+                onClick={() => handleSort("name")}
+              />
             </th>
             <th rowSpan={2} className={HEADER_CELL}>
-              Status
+              <SortableHeader
+                label="Status"
+                active={sortKey === "status"}
+                direction={sortDirection}
+                onClick={() => handleSort("status")}
+              />
             </th>
             <th colSpan={4} className={cn(HEADER_CELL, "text-center")}>
               Deadlines
             </th>
-            <th rowSpan={2} className={HEADER_CELL}>
+            {/* Explicit border-l, not left to divide-x: divide-x only
+                borders siblings within the SAME <tr>, but this cell's
+                rowSpan makes it stand beside row 2's "Fin. Aid" cell too —
+                without this, that boundary rendered with no divider at
+                all (found live: looked like the header just ran together
+                there). */}
+            <th rowSpan={2} className={cn(HEADER_CELL, "border-l border-navy-foreground/15")}>
               Requirements
             </th>
             <th rowSpan={2} className={HEADER_CELL}>
               Readiness
             </th>
             <th rowSpan={2} className={HEADER_CELL} />
-            <th rowSpan={2} className={HEADER_CELL} />
+            <th rowSpan={2} className={cn(HEADER_CELL, "rounded-tr-lg")} />
           </tr>
           <tr className="bg-navy text-navy-foreground text-left text-xs uppercase tracking-wide divide-x divide-navy-foreground/15 border-t border-navy-foreground/15">
-            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>EA</th>
-            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>ED</th>
-            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>RD</th>
-            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>Fin. Aid</th>
+            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>
+              <SortableHeader
+                label="EA"
+                active={sortKey === "ea"}
+                direction={sortDirection}
+                onClick={() => handleSort("ea")}
+              />
+            </th>
+            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>
+              <SortableHeader
+                label="ED"
+                active={sortKey === "ed"}
+                direction={sortDirection}
+                onClick={() => handleSort("ed")}
+              />
+            </th>
+            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>
+              <SortableHeader
+                label="RD"
+                active={sortKey === "rd"}
+                direction={sortDirection}
+                onClick={() => handleSort("rd")}
+              />
+            </th>
+            <th className={cn(HEADER_CELL, "text-navy-foreground/70")}>
+              <SortableHeader
+                label="Fin. Aid"
+                active={sortKey === "financialAid"}
+                direction={sortDirection}
+                onClick={() => handleSort("financialAid")}
+              />
+            </th>
           </tr>
         </thead>
         <tbody>
-          {colleges.map((college) => {
+          {sortedColleges.map((college) => {
             const requirements = requirementsByCollege[college.id] ?? [];
             const needsVerification = requirements.filter((r) => r.needsVerification).length;
             return (
@@ -374,7 +545,7 @@ export function CollegeTable({
                   ) : !college.researching ? (
                     <span className="text-muted-foreground">Not researched yet</span>
                   ) : college.researchStage === "requirements" ? (
-                    <FakeRequirementsProgressCell />
+                    <FakeRequirementsProgressCell collegeId={college.id} />
                   ) : (
                     <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -383,7 +554,10 @@ export function CollegeTable({
                   )}
                 </td>
                 <td className={BODY_CELL}>
-                  <ReadinessCell readiness={college.readiness} />
+                  <ReadinessCell
+                    readiness={college.readiness}
+                    hasTasks={collegeIdsWithTasks.has(college.id)}
+                  />
                 </td>
                 <td className={cn(BODY_CELL, "text-right")}>
                   <Link to={`/colleges/${college.id}`}>

@@ -5,6 +5,7 @@ import type {
   Conflict,
   EssayMatch,
   EssayPrompt,
+  GrammarIssue,
   PipelineProgress,
   Recommendation,
   RecommendationStatus,
@@ -51,6 +52,22 @@ function startNewSession(prefix: string): string {
 
 export function exitDemoMode(): void {
   startNewSession("");
+}
+
+/** Stores which user id last dismissed the "Tasks planned and readiness
+ * scored." bubble (EssayProgressBar's done state) — once a student clicks
+ * through to My Progress from it, it shouldn't keep reappearing on Colleges
+ * and inviting a second submission. Keyed by the dismissing id itself
+ * (rather than a plain boolean) so a fresh session — a new demo run, or
+ * exiting demo mode — doesn't inherit a previous session's dismissal. */
+const ESSAYS_BUBBLE_DISMISSED_KEY = "collegentic.essaysBubbleDismissed";
+
+export function isEssaysBubbleDismissed(): boolean {
+  return localStorage.getItem(ESSAYS_BUBBLE_DISMISSED_KEY) === getUserId();
+}
+
+export function dismissEssaysBubble(): void {
+  localStorage.setItem(ESSAYS_BUBBLE_DISMISSED_KEY, getUserId());
 }
 
 /** Seeds a full fictional student profile under a fresh demo user id —
@@ -267,6 +284,27 @@ export function createMaterial(input: CreateMaterialInput): Promise<StudentMater
   return apiFetch("/api/materials", { method: "POST", body: JSON.stringify(input) });
 }
 
+/** The student editing their own existing material (Essays' "Your
+ * Materials" edit icon) — see app/api.py's update_material. Same "student
+ * only, never an agent" constraint as createMaterial. */
+export function updateMaterial(
+  materialId: string,
+  input: CreateMaterialInput
+): Promise<StudentMaterial> {
+  return apiFetch(`/api/materials/${materialId}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Removes a material the student no longer wants tracked — see
+ * app/api.py's delete_material. Any essay match that had picked this
+ * material as its best fit gets re-matched (or dropped) server-side, so a
+ * refetch of essay matches after this call reflects the removal too. */
+export function deleteMaterial(materialId: string): Promise<{ id: string }> {
+  return apiFetch(`/api/materials/${materialId}`, { method: "DELETE" });
+}
+
 export function getEssayPrompts(collegeIds?: string[]): Promise<EssayPrompt[]> {
   const query = collegeIds?.length ? `?college_ids=${collegeIds.join(",")}` : "";
   return apiFetch(`/api/essay-prompts${query}`);
@@ -274,6 +312,16 @@ export function getEssayPrompts(collegeIds?: string[]): Promise<EssayPrompt[]> {
 
 export function getEssayMatches(): Promise<EssayMatch[]> {
   return apiFetch("/api/essay-matches");
+}
+
+/** Essay Editor's "Check grammar" — grammar/spelling/punctuation only, on
+ * whatever text is currently in the editor (may be unsaved). See
+ * app/api.py's grammar_check / app/tools/grammar_check.py. */
+export function checkGrammar(text: string): Promise<GrammarIssue[]> {
+  return apiFetch<{ issues: GrammarIssue[] }>("/api/grammar-check", {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  }).then((res) => res.issues);
 }
 
 export function sendOrchestratorMessage(message: string): Promise<{ reply: string }> {

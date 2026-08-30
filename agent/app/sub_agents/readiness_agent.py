@@ -35,7 +35,6 @@ without waiting for a full re-research pass.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator
 
 from google.adk.agents import BaseAgent, LlmAgent, SequentialAgent
@@ -44,7 +43,7 @@ from google.adk.events import Event, EventActions
 from pydantic import BaseModel, Field
 
 from app.callbacks import log_agent_run_complete, log_agent_run_start
-from app.config import config
+from app.config import config, llm_timeout_config
 from app.schemas import Readiness, ReadinessBreakdown
 from app.tools import firestore_tools as ft
 from app.tools.scoring import compute_readiness_score, recommendations_for_college
@@ -69,6 +68,18 @@ class CollegeReadinessContextAgent(BaseAgent):
         context_payload = {}
         for college in colleges:
             requirements = ft.get_requirements(user_id, [college.id])
+            # Nothing meaningful to score yet — compute_readiness_score's
+            # "no requirements of this type = owes nothing, so 100" default
+            # is correct for a college that genuinely doesn't need e.g.
+            # essays, but wrong for one that simply hasn't been researched
+            # yet: found live, a newly-added college scored a flat 80%
+            # (every category's vacuous default) before its own research
+            # had even finished, reading as real progress when there was
+            # none. Skipping it here leaves its readiness untouched
+            # (computedAt stays null) rather than persisting that
+            # placeholder as if it were real.
+            if not requirements:
+                continue
             college_recommendations = recommendations_for_college(
                 all_recommendations, college.id
             )
@@ -128,20 +139,10 @@ async def _persist_readiness(callback_context) -> None:
     """Runs as an after_agent_callback for the same reason as every other
     output_schema agent's persist step in this codebase.
 
-    Writes one college at a time with a pacing pause between them, same
-    technique as requirements_agent.py's Stage 1/3/4 — the LLM explanation
-    call above is still one batched request (cost control), this only
-    staggers the already-computed results landing in Firestore, so the
-    Colleges table's Readiness column reveals per college instead of every
-    row jumping to a score in the same poll tick.
-
-    async, with `await asyncio.sleep(...)` rather than `time.sleep(...)` —
-    same fix as requirements_agent.py's _persist_requirements_and_sources:
-    this whole backend is one uvicorn process on a single event loop, and
-    ADK calls an after_agent_callback directly on it, so a plain
-    `time.sleep()` here would freeze every other in-flight request
-    (including the Colleges page's polling GET) for the pause's duration
-    instead of just this one.
+    Writes every college's readiness in one pass — unlike the requirements
+    pipeline's staggered reveals, readiness scores should land as soon as
+    they're computed, since the score is exactly what a student is waiting
+    on right after asking to track or update a college.
     """
     user_id = callback_context.user_id
     context_payload = callback_context.state.get("college_readiness_context") or {}
@@ -151,9 +152,7 @@ async def _persist_readiness(callback_context) -> None:
         for item in explanation_list.get("explanations", [])
     }
 
-    for i, (college_id, info) in enumerate(context_payload.items()):
-        if i > 0:
-            await asyncio.sleep(0.4)
+    for college_id, info in context_payload.items():
         # Falls back to the raw deterministic facts if the LLM ever drops a
         # college_id — every college still gets a truthful explanation,
         # never a blank one, even if the LLM's phrasing pass is incomplete.
@@ -173,6 +172,7 @@ async def _persist_readiness(callback_context) -> None:
 
 readiness_explanation_agent = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(),
     name="readiness_explanation_agent",
     description="Writes natural-language explanations for pre-computed college readiness scores.",
     instruction=_READINESS_EXPLANATION_INSTRUCTION,

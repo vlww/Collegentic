@@ -26,9 +26,9 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/colleges", label: "Colleges", icon: GraduationCap },
+  { to: "/progress", label: "My Progress", icon: ClipboardList },
   { to: "/tasks", label: "Tasks", icon: CheckSquare },
   { to: "/essays", label: "Essays", icon: FileText },
-  { to: "/progress", label: "My Progress", icon: ClipboardList },
   { to: "/readiness", label: "App Readiness", icon: Gauge },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];

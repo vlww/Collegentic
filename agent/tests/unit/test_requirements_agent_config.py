@@ -90,6 +90,28 @@ def test_logobrands_never_matches_washu_to_university_of_washington() -> None:
     )
 
 
+def test_logobrands_state_word_alone_is_not_enough_to_match() -> None:
+    """Regression test: found live that "Metropolitan State University of
+    Denver" (a D2 school, nowhere near any Power-4 conference) picked up
+    Mississippi State's logo, because logobrands.com's SEC/ACC/Big Ten/Big
+    12 listings include six different "___ State" schools and they all
+    share the single word "state" with any other "___ State" query — the
+    only entry with nonzero overlap won even at that low a score. A "state"-
+    only overlap must never match, but a genuine "___ State" match (which
+    also shares its specific name word) must still work normally."""
+    entries = (
+        ("mississippi state mississippi state bulldogs", "https://example.com/msst.png"),
+        ("iowa state iowa state cyclones", "https://example.com/iowa-state.png"),
+    )
+    assert (
+        _match_logobrands_entry("Metropolitan State University of Denver", entries) is None
+    )
+    assert (
+        _match_logobrands_entry("Iowa State University", entries)
+        == "https://example.com/iowa-state.png"
+    )
+
+
 def test_washu_color_is_pinned_to_green_not_red() -> None:
     """Regression test: found live that college_research_agent's
     google_search-grounded pass non-deterministically reported WashU's
@@ -103,10 +125,9 @@ def test_washu_color_is_pinned_to_green_not_red() -> None:
 
 def test_requirements_pipeline_order() -> None:
     """branding_extraction_agent/deadlines_extraction_agent are NOT in this
-    pipeline — they now run in a separate, parallel branch (quick_research_
-    pipeline, see orchestrator_agent.py's per_college_pipeline) so they
-    don't have to wait behind requirements_confidence_loop's own real
-    research pass."""
+    pipeline — they now run in a separate, independently-retried branch
+    (orchestrator_agent.py's quick_research_pipeline) so they don't have to
+    wait behind requirements_confidence_loop's own real research pass."""
     assert requirements_pipeline.sub_agents == [
         requirements_confidence_loop,
         requirements_agent,

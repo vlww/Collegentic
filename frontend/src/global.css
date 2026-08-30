@@ -5,7 +5,9 @@
 
 /* "Maintanker" by Salamahtype (Personal Use Only — see
    assets/fonts/Maintanker-LICENSE.txt) — the sidebar's "Collegentic"
-   logotype only, nowhere else in the app. */
+   logotype, and (see PageHeader.tsx) every page's own title, for the same
+   distinctive look throughout the app. Never used for body copy/descriptions
+   — it stays a headline-only display face. */
 @font-face {
   font-family: "Maintanker";
   src: url("./assets/fonts/Maintanker.ttf") format("truetype");

@@ -35,11 +35,18 @@ Milestone 4): `TaskContextAgent` is a deterministic Firestore-read step
 read tool + output_schema together, an untested combination in this
 codebase; every other synthesis agent so far reads state, not a live tool.
 
-Re-scans ALL tracked colleges' requirements every run, not just newly
-researched ones: adding college #2 shouldn't lose task coverage for
-college #1, and `firestore_tools.save_tasks` already dedupes by
-`source_requirement_id`, so re-planning an already-covered college costs
-one Gemini call, not duplicate Firestore writes.
+Re-scans ALL tracked colleges' Requirement docs every run (never just
+newly-researched ones — adding college #2 shouldn't lose task coverage for
+college #1), but only sends the LLM requirements that don't already have a
+task (see TaskContextAgent) — a requirement's title/description/category
+are pure LLM-synthesis output with no reason to change once planned (see
+firestore_tools.save_tasks's docstring), so re-deriving them for every
+already-tracked college on every run got slower and slower as more
+colleges piled up, entirely reprocessing the same, unchanged output each
+time. `POST /tasks/replan` opts back into reprocessing everything (session
+state `force_full_replan`) for the one case that legitimately needs it: a
+student wanting already-planned tasks regenerated after a prompt/logic
+change, without re-adding every college.
 """
 
 from __future__ import annotations
@@ -52,7 +59,7 @@ from google.adk.events import Event, EventActions
 from pydantic import BaseModel, Field
 
 from app.callbacks import log_agent_run_complete, log_agent_run_start
-from app.config import config
+from app.config import config, llm_timeout_config
 from app.schemas import Task, TaskCreatedBy
 from app.tools import firestore_tools as ft
 
@@ -60,7 +67,8 @@ from app.tools import firestore_tools as ft
 class TaskContextAgent(BaseAgent):
     """Loads every tracked college's Requirement docs into session state
     for task_planning_agent to reason over — see module docstring for why
-    this re-scans everything rather than just the newly-researched colleges."""
+    this re-scans every college's Requirements but only sends the ones that
+    don't already have a task, unless `force_full_replan` is set."""
 
     def __init__(self, name: str = "task_context_agent"):
         super().__init__(
@@ -78,6 +86,18 @@ class TaskContextAgent(BaseAgent):
             college.id: college.name for college in colleges if college.id
         }
         requirements = ft.get_requirements(user_id, list(college_id_to_name.keys()))
+
+        # Only /tasks/replan sets this — see module docstring. Every other
+        # caller (the automatic pipeline after new-college research) wants
+        # just the requirements planning hasn't already covered.
+        if not ctx.session.state.get("force_full_replan"):
+            already_planned = {
+                task.source_requirement_id
+                for task in ft.get_tasks(user_id)
+                if task.source_requirement_id
+            }
+            requirements = [r for r in requirements if r.id not in already_planned]
+
         requirements_payload = [
             {
                 "id": requirement.id,
@@ -160,6 +180,9 @@ COLLEGES (college_id -> name):
 REQUIREMENTS:
 {requirements_for_planning}
 
+If REQUIREMENTS is empty, respond with an empty `tasks` list — either
+nothing is tracked yet, or everything already has a task.
+
 RULES:
 - Generate exactly ONE task per actionable requirement — never split one
   requirement into multiple tasks (e.g. "2 recommendations required"
@@ -218,6 +241,7 @@ def _persist_tasks(callback_context) -> None:
 
 task_planning_agent = LlmAgent(
     model=config.critic_model,
+    generate_content_config=llm_timeout_config(batched=True),
     name="task_planning_agent",
     description="Converts requirements into concrete, deduplicated tasks.",
     instruction=_TASK_PLANNING_INSTRUCTION,

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2, Search, Sparkles } from "lucide-react";
+import { SectionCard } from "@/components/collegentic/SectionCard";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent } from "@/components/ui/card";
 import { sendOrchestratorMessage } from "@/lib/api";
 
 interface AddCollegeFormProps {
@@ -55,41 +55,43 @@ export function AddCollegeForm({ onDone, onLoadingChange }: AddCollegeFormProps)
   }
 
   return (
-    <Card>
-      <CardContent className="space-y-3">
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <label htmlFor="add-college" className="text-sm font-medium">
-            What colleges are you applying to?
-          </label>
-          <Textarea
-            id="add-college"
-            placeholder="e.g. I'm applying to MIT, Princeton, and Rice University."
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            disabled={loading}
-            rows={2}
-          />
-          <div className="flex items-center gap-3">
-            <Button type="submit" disabled={loading || !message.trim()}>
-              {loading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" /> Researching…
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-4 w-4" /> Research and add
-                </>
-              )}
-            </Button>
-            {loading && (
-              <p className="text-xs text-muted-foreground">
-                Real web research is running, this can take a minute or two.
-              </p>
+    <SectionCard title="College Quick Add" icon={Search}>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <label htmlFor="add-college" className="text-sm font-medium">
+          What colleges are you interested in applying to?
+        </label>
+        <Textarea
+          id="add-college"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          disabled={loading}
+          rows={1}
+          className="min-h-9 resize-none"
+        />
+        <div className="flex items-center gap-3">
+          <Button
+            type="submit"
+            disabled={loading || !message.trim()}
+            className="bg-orange text-orange-foreground hover:bg-orange/90"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Researching…
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4" /> Research and add
+              </>
             )}
-          </div>
-        </form>
-        {error && <p className="text-sm text-destructive">{error}</p>}
-      </CardContent>
-    </Card>
+          </Button>
+          {loading && (
+            <p className="text-xs text-muted-foreground">
+              Real web research is running, this can take a minute or two.
+            </p>
+          )}
+        </div>
+      </form>
+      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+    </SectionCard>
   );
 }

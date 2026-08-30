@@ -23,7 +23,7 @@ function barColor(score: number): string {
   return "bg-destructive";
 }
 
-type Branded = Pick<College, "name" | "logoUrl" | "schoolColors" | "deadlines">;
+type Branded = Pick<College, "name" | "logoUrl" | "schoolColors" | "deadlines" | "researching">;
 
 /** Per-college readiness display — .agents-cli-spec.md § Application
  * Readiness Agent's own worked example ("MIT — 82% Ready — Requirements:
@@ -32,12 +32,26 @@ type Branded = Pick<College, "name" | "logoUrl" | "schoolColors" | "deadlines">;
  * places. The top accent bar and avatar use the college's real school
  * colors/logo (Milestone 19) when research has found them, same as
  * CollegeTable — a consistent visual identity per school across the app. */
-export function ReadinessCard({ college, readiness }: { college: Branded; readiness: Readiness }) {
-  if (readiness.computedAt === null) {
+export function ReadinessCard({
+  college,
+  readiness,
+  hasTasks,
+}: {
+  college: Branded;
+  readiness: Readiness;
+  /** Withhold the score until this college actually has planned tasks —
+   * even a real, non-placeholder score reads as "further along than it
+   * is" while task planning is still running for this college, since a
+   * student expects Tasks and Readiness to appear together. */
+  hasTasks: boolean;
+}) {
+  if (readiness.computedAt === null || !hasTasks) {
     return (
       <Card>
         <CardContent className="text-sm text-muted-foreground">
-          Not scored yet, {college.name} hasn't been researched.
+          {college.researching
+            ? `${college.name} is still being researched.`
+            : `Not scored yet, readiness is calculated right after tasks are planned.`}
         </CardContent>
       </Card>
     );
@@ -45,7 +59,7 @@ export function ReadinessCard({ college, readiness }: { college: Branded; readin
 
   return (
     <Card
-      className="school-tint border-t-[3px]"
+      className="school-tint border-t-[8px]"
       style={{ borderTopColor: collegeAccentColor(college), ...schoolAccentStyle(college) }}
     >
       <CardContent className="space-y-4">
@@ -68,7 +82,10 @@ export function ReadinessCard({ college, readiness }: { college: Branded; readin
                   <span className="text-muted-foreground">{BREAKDOWN_LABEL[key]}</span>
                   <span className="tabular-nums text-foreground">{Math.round(value)}%</span>
                 </div>
-                <div className="h-1.5 w-full rounded-full bg-secondary">
+                {/* bg-secondary nearly disappears against this card's pastel
+                    school-tint background — muted-foreground/25 stays a
+                    visible neutral track regardless of the tint color. */}
+                <div className="h-1.5 w-full rounded-full bg-muted-foreground/25">
                   <div
                     className={cn("h-1.5 rounded-full", barColor(value))}
                     style={{ width: `${Math.max(0, Math.min(100, value))}%` }}

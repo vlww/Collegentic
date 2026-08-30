@@ -5,20 +5,28 @@ import { TodaysPriorities } from "@/components/collegentic/TodaysPriorities";
 import { ConflictAlerts } from "@/components/collegentic/ConflictAlerts";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { deleteCollege, getColleges, getRequirements } from "@/lib/api";
+import { deleteCollege, getColleges, getRequirements, getTasks } from "@/lib/api";
 import type { College, Requirement } from "@/lib/types";
 import { Link } from "react-router-dom";
 
 export function Dashboard() {
   const [colleges, setColleges] = useState<College[] | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
+  const [collegeIdsWithTasks, setCollegeIdsWithTasks] = useState<Set<string>>(new Set());
   const [error, setError] = useState(false);
 
   const load = useCallback(() => {
     getColleges()
       .then(async (result) => {
+        const [newRequirements, newTasks] = await Promise.all([
+          result.length > 0 ? getRequirements(result.map((c) => c.id)) : Promise.resolve([]),
+          getTasks(),
+        ]);
         setColleges(result);
-        setRequirements(result.length > 0 ? await getRequirements(result.map((c) => c.id)) : []);
+        setRequirements(newRequirements);
+        setCollegeIdsWithTasks(
+          new Set(newTasks.map((t) => t.collegeId).filter((id): id is string => id !== null))
+        );
       })
       .catch(() => setError(true));
   }, []);
@@ -44,10 +52,7 @@ export function Dashboard() {
 
   return (
     <div>
-      <PageHeader
-        title="Dashboard"
-        description="All of your applications, at a glance."
-      />
+      <PageHeader title="Dashboard" />
 
       <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
         <TodaysPriorities />
@@ -70,7 +75,7 @@ export function Dashboard() {
 
       {!error && colleges !== null && colleges.length === 0 && (
         <Card>
-          <CardContent className="space-y-3 text-center py-10">
+          <CardContent className="space-y-3 text-center py-6">
             <p className="text-sm text-muted-foreground">
               You're not tracking any colleges yet.
             </p>
@@ -85,6 +90,7 @@ export function Dashboard() {
         <CollegeTable
           colleges={colleges}
           requirementsByCollege={requirementsByCollege}
+          collegeIdsWithTasks={collegeIdsWithTasks}
           onDelete={handleDelete}
         />
       )}

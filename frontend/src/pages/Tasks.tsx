@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Clock } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { collegeAccentColor, schoolAccentStyle } from "@/components/collegentic/CollegeAvatar";
@@ -56,16 +56,32 @@ export function Tasks() {
   const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
   const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     getColleges().then(async (result) => {
+      const [newTasks, newRequirements] = await Promise.all([
+        getTasks(),
+        result.length > 0 ? getRequirements(result.map((c) => c.id)) : Promise.resolve([]),
+      ]);
       setColleges(result);
-      setTasks(await getTasks());
-      if (result.length > 0) {
-        setRequirements(await getRequirements(result.map((c) => c.id)));
-      }
+      setTasks(newTasks);
+      setRequirements(newRequirements);
       setLoaded(true);
     });
   }, []);
+
+  useEffect(load, [load]);
+
+  // Research (and the task planning/priority/readiness stages after it)
+  // keeps running on the backend well after this page's initial fetch — a
+  // student sitting on the Tasks page waiting for them to appear would
+  // otherwise see nothing update until they manually reload. Poll the same
+  // way the Colleges page does while any tracked college is still mid-
+  // research.
+  useEffect(() => {
+    if (!colleges.some((c) => c.researching)) return;
+    const interval = setInterval(load, 700);
+    return () => clearInterval(interval);
+  }, [colleges, load]);
 
   async function handleStatusChange(requirement: Requirement, status: RequirementStatus) {
     await updateRequirementProgress(requirement.collegeId, requirement.id, status);
@@ -105,7 +121,7 @@ export function Tasks() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Tasks" description="Sorted by priority." />
+      <PageHeader title="Tasks" />
 
       {(colleges.length > 0 || categories.length > 0 || filtered.length > 0) && (
         <div className="rounded-lg border border-border overflow-hidden">
@@ -113,7 +129,7 @@ export function Tasks() {
             <div className="bg-navy px-4 py-5 flex flex-wrap gap-3">
               {colleges.length > 0 && (
                 <Select value={collegeFilter} onValueChange={setCollegeFilter}>
-                  <SelectTrigger className="w-64 border-2 border-orange bg-background">
+                  <SelectTrigger className="w-64 bg-background">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -129,7 +145,7 @@ export function Tasks() {
 
               {categories.length > 0 && (
                 <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                  <SelectTrigger className="w-64 border-2 border-orange bg-background">
+                  <SelectTrigger className="w-64 bg-background">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -232,7 +248,11 @@ export function Tasks() {
 
       {loaded && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          Nothing yet, add a college to get started.
+          {colleges.length === 0
+            ? "Nothing yet, add a college to get started."
+            : tasks.length === 0
+              ? "No tasks yet, they'll appear once your colleges finish being researched."
+              : "No tasks match this filter."}
         </p>
       )}
     </div>

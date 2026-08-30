@@ -14,36 +14,19 @@
 
 """Structural checks on the Essay Matching Agent's wiring — no model calls,
 no Firestore. Live behavior is covered by
-tests/integration/test_essay_matching_agent.py.
+tests/integration/test_essay_matching_agent.py; the categorizer itself by
+tests/unit/test_essay_matching.py.
 """
 
-from app.sub_agents.essay_matching_agent import (
-    EssayContextAgent,
-    essay_analysis_agent,
-    essay_matching_pipeline,
-)
+from app.sub_agents.essay_matching_agent import essay_matching_pipeline
 
 
-def test_essay_analysis_agent_has_no_tools() -> None:
-    """It only reasons over pre-gathered facts — never sees raw Firestore,
-    and per .agents-cli-spec.md § Constraints, it has no essay-editing
-    tool at all: it can only score reuse-fit, never rewrite text."""
-    assert essay_analysis_agent.tools == []
+def test_pipeline_logs_activity() -> None:
+    """Deterministic now (app/tools/essay_matching.py), not an LlmAgent —
+    just checks the Agent Activity logging hooks are still wired."""
+    assert essay_matching_pipeline.before_agent_callback is not None
+    assert essay_matching_pipeline.after_agent_callback is not None
 
 
-def test_essay_analysis_agent_output_schema_wired() -> None:
-    assert essay_analysis_agent.output_key == "essay_analysis"
-    assert essay_analysis_agent.output_schema is not None
-
-
-def test_context_agent_logs_activity() -> None:
-    agent = EssayContextAgent()
-    assert agent.before_agent_callback is not None
-    assert agent.after_agent_callback is not None
-
-
-def test_pipeline_order() -> None:
-    assert [agent.name for agent in essay_matching_pipeline.sub_agents] == [
-        "essay_context_agent",
-        "essay_analysis_agent",
-    ]
+def test_pipeline_name() -> None:
+    assert essay_matching_pipeline.name == "essay_matching_pipeline"

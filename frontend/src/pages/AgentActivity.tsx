@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { Bot } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { AgentRunStatusBadge } from "@/components/collegentic/AgentRunStatusBadge";
-import { Card, CardContent } from "@/components/ui/card";
+import { SectionCard } from "@/components/collegentic/SectionCard";
 import { getAgentRuns } from "@/lib/api";
 import { groupByPipeline } from "@/lib/agentRuns";
 import { formatDateTime, formatDuration } from "@/lib/format";
@@ -42,10 +43,7 @@ export function AgentActivity() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Agent Activity"
-        description="What Collegentic's agents are doing right now, and what they've done."
-      />
+      <PageHeader title="Agent Activity" />
 
       {runs !== null && groups.length === 0 && (
         <p className="text-sm text-muted-foreground">
@@ -54,39 +52,37 @@ export function AgentActivity() {
       )}
 
       {groups.map((group) => (
-        <Card key={group.pipelineRunId}>
-          <CardContent className="space-y-3">
-            <div className="flex items-center justify-between gap-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {formatDateTime(group.startedAt)}
-              </p>
-              <AgentRunStatusBadge status={group.status} />
-            </div>
-            <div className="divide-y divide-border rounded-lg border border-border">
-              {group.runs.map((run) => (
-                <div key={run.id} className="p-3 space-y-1">
-                  <div className="flex items-center justify-between gap-4">
-                    <span className="text-sm font-medium text-foreground">
-                      {humanizeAgentName(run.agentName)}
+        <SectionCard
+          key={group.pipelineRunId}
+          title={formatDateTime(group.startedAt)}
+          icon={Bot}
+          action={<AgentRunStatusBadge status={group.status} />}
+          contentClassName=""
+        >
+          <div className="divide-y divide-border">
+            {group.runs.map((run) => (
+              <div key={run.id} className="p-3 space-y-1">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm font-medium text-foreground">
+                    {humanizeAgentName(run.agentName)}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-muted-foreground">
+                      {formatDuration(run.startedAt, run.completedAt)}
                     </span>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-muted-foreground">
-                        {formatDuration(run.startedAt, run.completedAt)}
-                      </span>
-                      <AgentRunStatusBadge status={run.status} />
-                    </div>
+                    <AgentRunStatusBadge status={run.status} />
                   </div>
-                  {run.summary && (
-                    <p className="text-sm text-muted-foreground">{run.summary}</p>
-                  )}
-                  {run.errorMessage && (
-                    <p className="text-sm text-destructive">{run.errorMessage}</p>
-                  )}
                 </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+                {run.summary && (
+                  <p className="text-sm text-muted-foreground">{run.summary}</p>
+                )}
+                {run.errorMessage && (
+                  <p className="text-sm text-destructive">{run.errorMessage}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </SectionCard>
       ))}
     </div>
   );

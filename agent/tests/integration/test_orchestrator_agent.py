@@ -112,8 +112,8 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
 
     # Essay prompts get structured from essay-type Requirements even with
     # zero StudentMaterials on file — but no match is possible without any
-    # material to compare against, guaranteed by _persist_essay_analysis's
-    # own id validation (see essay_matching_agent.py).
+    # material to compare against (app/tools/essay_matching.py: an empty
+    # materials_by_category means every category has no candidates).
     essay_requirements = [r for r in requirements if r.type == "essay"]
     if essay_requirements:
         assert ft.get_essay_prompts(user_id, colleges[0].id)
@@ -126,7 +126,7 @@ def test_orchestrator_parses_delegates_and_summarizes_in_plain_language(
         "college_research_agent",
         "requirements_agent",
         "conflict_detection_agent",
-        "essay_analysis_agent",
+        "essay_matching_pipeline",
         "task_planning_agent",
         "priority_explanation_agent",
         "readiness_explanation_agent",

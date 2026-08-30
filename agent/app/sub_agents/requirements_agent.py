@@ -63,7 +63,7 @@ from app.callbacks import (
     log_agent_run_complete,
     log_agent_run_start,
 )
-from app.config import config
+from app.config import config, llm_timeout_config
 from app.schemas import ConfidenceLevel, Requirement, ResearchSource
 from app.tools import firestore_tools as ft
 
@@ -107,8 +107,18 @@ def _is_official_source(url: str, title: str = "") -> bool:
 
 
 _LOGO_USER_AGENT = "Collegentic/1.0 (college-application-assistant; demo project)"
-_LOGO_FETCH_RETRIES = 4
-_LOGO_FETCH_RETRY_DELAY_SECONDS = 1.5
+_LOGO_FETCH_RETRIES = 2
+_LOGO_FETCH_RETRY_DELAY_SECONDS = 0.5
+_LOGO_FETCH_TIMEOUT_SECONDS = 3
+# Hard ceiling on the WHOLE logo lookup (_fetch_college_logo can chain up to
+# ~6 sequential network calls — logobrands.com, then a Wikipedia direct-
+# title lookup, then up to 5 search candidates) — see _persist_branding's
+# use of this. Comfortably above that chain's worst realistic case
+# (6 calls x up to ~7s each including retries ~= 42s) while still far
+# short of the outer per-college pipeline ceiling, so a genuinely stuck
+# logo lookup resolves (with no logo, rather than none at all) in bounded
+# time instead of tying up that college's whole research pass.
+_LOGO_LOOKUP_TIMEOUT_SECONDS = 60
 
 
 def _open_url_with_retries(
@@ -121,11 +131,19 @@ def _open_url_with_retries(
     429/timeout shouldn't be treated the same as "this logo doesn't
     exist" — this is the "keeps looking until it finds a working one"
     that the sequential per-college checks below rely on.
+
+    Kept short deliberately: a single college's logo lookup can chain up to
+    ~6 of these calls (logobrands.com, then a Wikipedia direct-title lookup,
+    then up to 5 Wikipedia search candidates) — worst case at the old 4
+    retries x 5s timeout was ~29s for just ONE of those calls to give up,
+    which could make a single college's branding step take minutes. 2
+    retries x 3s timeout keeps real rate-limit recovery while capping a
+    single call's worst case near ~7s.
     """
     last_exc: Exception | None = None
     for attempt in range(_LOGO_FETCH_RETRIES):
         try:
-            return urllib.request.urlopen(request, timeout=5)
+            return urllib.request.urlopen(request, timeout=_LOGO_FETCH_TIMEOUT_SECONDS)
         except (urllib.error.URLError, TimeoutError) as exc:
             last_exc = exc
             if attempt < _LOGO_FETCH_RETRIES - 1:
@@ -413,6 +431,19 @@ def _match_logobrands_entry(college_name: str, entries: tuple[tuple[str, str], .
         overlap = words & entry_words
         if not overlap:
             continue
+        # "state" alone is too common a collision to count as a match on its
+        # own — Iowa State, Kansas State, Michigan State, Mississippi State,
+        # Ohio State, Oklahoma State, and Washington State are ALL listed
+        # here, so any other "___ State" school (e.g. "Metropolitan State
+        # University of Denver", a D2 school nowhere near these conferences)
+        # ties with all of them on the single word "state" and picks up
+        # whichever comes first in document order — found live: "MSU Denver"
+        # incorrectly got Mississippi State's logo this way. Every genuine
+        # "___ State" match here also shares its specific name word (Iowa
+        # State's overlap is {"iowa", "state"}, not just {"state"}), so
+        # requiring more than "state" alone doesn't cost real matches.
+        if overlap == {"state"}:
+            continue
         score = len(overlap) / len(words | entry_words)
         if score > best_score:
             best_score = score
@@ -524,6 +555,7 @@ class Feedback(BaseModel):
 
 findings_evaluator = LlmAgent(
     model=config.critic_model,
+    generate_content_config=llm_timeout_config(),
     name="findings_evaluator",
     description="Grades whether research findings are complete enough for structured extraction.",
     instruction="""You are a meticulous QA analyst reviewing college application research
@@ -600,6 +632,7 @@ def _after_followup_search(callback_context) -> None:
 
 findings_followup_search = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(),
     name="findings_followup_search",
     description="Runs targeted follow-up searches and merges new findings into raw_research_findings.",
     instruction="""You are running a targeted refinement pass on college research.
@@ -777,20 +810,34 @@ async def _persist_branding(callback_context) -> None:
     # whole college's research began) has been showing this whole time
     # rather than only appearing now. --------------------------------------
     try:
-        logo_url = await asyncio.to_thread(_fetch_college_logo, college_name)
+        logo_url = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_college_logo, college_name),
+            timeout=_LOGO_LOOKUP_TIMEOUT_SECONDS,
+        )
         if not logo_url:
             # Absolute last resort, for a college whose Wikipedia article
             # itself couldn't be resolved: college_research_agent's own
             # google_search-grounded Commons lookup for a seal filename.
             logo_filename = branding_entry.get("logo_commons_filename")
             if logo_filename:
-                logo_url = await asyncio.to_thread(
-                    _resolve_commons_logo_url, logo_filename
+                logo_url = await asyncio.wait_for(
+                    asyncio.to_thread(_resolve_commons_logo_url, logo_filename),
+                    timeout=_LOGO_LOOKUP_TIMEOUT_SECONDS,
                 )
     except Exception:
+        # Covers TimeoutError too — found live: a raw socket/DNS-level stall
+        # in one of _fetch_college_logo's several sequential network calls
+        # can hang well past urllib's own per-call `timeout=`, since a
+        # hostname lookup stalling before a socket even exists isn't always
+        # bounded by that parameter. _open_url_with_retries' own retry
+        # ladder can't help with a hang like that (it only kicks in once a
+        # call actually returns or raises), so this outer, hard ceiling is
+        # what actually guarantees the logo cell resolves — with or without
+        # a logo — in bounded time instead of possibly hanging for however
+        # long that one stuck call takes, or indefinitely.
         logger.warning(
-            "Logo lookup failed for %r, continuing without one", college_name,
-            exc_info=True,
+            "Logo lookup failed or timed out for %r, continuing without one",
+            college_name, exc_info=True,
         )
         logo_url = None
     if logo_url:
@@ -823,6 +870,7 @@ async def _persist_branding(callback_context) -> None:
 
 branding_extraction_agent = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(),
     name="branding_extraction_agent",
     description="Quickly extracts a college's brand color(s)/logo hint from "
     "branding_research_agent's own small research pass — the very first "
@@ -843,7 +891,10 @@ class ExtractedDeadline(BaseModel):
     )
     kind: Literal["EA", "ED", "RD", "financial_aid"] = Field(
         description="Which deadline this is — Early Action, Early Decision, Regular "
-        "Decision, or a financial aid deadline (CSS Profile/FAFSA priority date)."
+        "Decision, or a financial aid deadline (CSS Profile/FAFSA priority date). A "
+        "rolling-admission college's general/priority application deadline (it won't "
+        "be labeled 'Regular Decision') still belongs in RD — RD means 'the normal "
+        "deadline most applicants use,' not literally the phrase 'Regular Decision.'"
     )
     deadline_iso: str = Field(
         description="ISO 8601 date (YYYY-MM-DD). College deadline pages very often "
@@ -877,7 +928,11 @@ If DEADLINES RESEARCH FINDINGS is empty, respond with an empty `deadlines`
 list rather than guessing or erroring — nothing to extract yet.
 
 For each application deadline the findings state, add one entry to
-`deadlines` with its college_name, kind, and ISO date.
+`deadlines` with its college_name, kind, and ISO date. A rolling-admission
+college's general or priority deadline (however it's labeled — "Priority
+Deadline", "Apply by...", etc.) is still a real deadline: classify it as RD
+rather than skipping it just because it isn't literally called "Regular
+Decision".
 
 Respond with a single raw JSON object matching the DeadlinesExtraction schema."""
 
@@ -886,12 +941,6 @@ async def _persist_deadlines(callback_context) -> None:
     """Writes College.deadlines one field at a time — see the module
     comment above this agent's schemas for why this runs as its own step,
     after branding_extraction_agent rather than alongside it.
-
-    async, `await asyncio.sleep(...)` rather than `time.sleep(...)` for the
-    pacing pause below — same reasoning as every other persist callback in
-    this file: this whole backend is one uvicorn process on a single
-    asyncio event loop, so a blocking call here would freeze every other
-    in-flight request, not just this one.
     """
     user_id = callback_context.user_id
     extraction = callback_context.state.get("deadlines_extraction") or {}
@@ -944,11 +993,6 @@ async def _persist_deadlines(callback_context) -> None:
                     "Failed to save %s deadline for college %r, continuing",
                     field, college_id, exc_info=True,
                 )
-        # Deliberate pause before revealing this field resolved — long
-        # enough for each deadline to read as its own discovery rather than
-        # four back-to-back writes blurring into one burst, short enough
-        # not to meaningfully add to the overall research time.
-        await asyncio.sleep(1.0)
         try:
             ft.advance_research_stage(user_id, college_id, _NEXT_STAGE_AFTER_DEADLINE[field])
         except Exception:
@@ -965,6 +1009,7 @@ async def _persist_deadlines(callback_context) -> None:
 
 deadlines_extraction_agent = LlmAgent(
     model=config.worker_model,
+    generate_content_config=llm_timeout_config(),
     name="deadlines_extraction_agent",
     description="Quickly extracts a college's deadlines from "
     "deadlines_research_agent's own small research pass, right after "
@@ -1280,6 +1325,7 @@ async def _persist_requirements_and_sources(callback_context) -> None:
 
 requirements_agent = LlmAgent(
     model=config.critic_model,
+    generate_content_config=llm_timeout_config(batched=True),
     name="requirements_agent",
     description="Structures research findings into Requirement + ResearchSource records.",
     instruction=_REQUIREMENTS_INSTRUCTION,

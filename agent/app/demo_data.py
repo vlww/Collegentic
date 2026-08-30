@@ -590,16 +590,15 @@ def seed_demo_data(user_id: str) -> None:
         all_requirements.extend(college_requirements)
 
         # Essay prompts for EVERY essay-type requirement (matching the real
-        # essay_analysis_agent's actual behavior — it structures a prompt
-        # for each one regardless of whether anything matches it, see
-        # essay_matching_agent.py). Found live while auditing the Essay Map
-        # for Milestone 16: seeding a prompt only for requirements with a
-        # deliberate `match_material` left Stanford/Princeton's essay
-        # requirements with no prompt node at all — an orphaned college
-        # node with nothing to its right, not what the real pipeline would
-        # ever produce. Reuse matches are still only created where
-        # `match_material` is set — a college with no plausible material
-        # correctly gets a prompt with no match, same as the real agent.
+        # essay_matching_pipeline's actual behavior, app/tools/
+        # essay_matching.py — it categorizes and upserts a prompt for each
+        # one regardless of whether anything matches it). The frontend's
+        # EssayNetworkGraph only ever DISPLAYS a prompt with a real match
+        # though (Milestone 16+: unmatched nodes were cluttering the map),
+        # so a deliberately unmatched prompt here (no `match_material`) is
+        # exactly how the demo shows off that filtering — present in
+        # Firestore, invisible on the graph, same as it'd be for a real
+        # hyper-specific ("other" category) prompt.
         for req_spec, requirement in zip(
             spec["requirements"], college_requirements, strict=True
         ):
@@ -779,7 +778,7 @@ def _seed_agent_run_history(
         ("requirements_agent", f"Extracted {requirement_count - 3} requirement(s)."),
         ("conflict_detection_agent", "Detected 1 conflict(s)."),
         (
-            "essay_analysis_agent",
+            "essay_matching_pipeline",
             "Structured 6 essay prompt(s), found 2 reuse match(es).",
         ),
         ("task_planning_agent", f"Planned {task_count - 3} task(s)."),

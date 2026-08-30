@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { AddCollegeForm } from "@/components/collegentic/AddCollegeForm";
 import { CollegeTable } from "@/components/collegentic/CollegeTable";
+import { EssayProgressBar } from "@/components/collegentic/EssayProgressBar";
 import { ResearchProgressBar } from "@/components/collegentic/ResearchProgressBar";
+import { TaskPlanningProgressBar } from "@/components/collegentic/TaskPlanningProgressBar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -12,6 +14,7 @@ import {
   getColleges,
   getPipelineProgress,
   getRequirements,
+  getTasks,
   refreshCollegeLogos,
   sendOrchestratorMessage,
 } from "@/lib/api";
@@ -30,32 +33,41 @@ const POLL_INTERVAL_MS = 700;
 export function Colleges() {
   const [colleges, setColleges] = useState<College[] | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
+  const [collegeIdsWithTasks, setCollegeIdsWithTasks] = useState<Set<string>>(new Set());
   const [error, setError] = useState(false);
-  const [researching, setResearching] = useState(false);
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
   const [pipelineFailed, setPipelineFailed] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
-  // Shown in place of the progress bar right after a run finishes — a
-  // one-line green confirmation instead of the Orchestrator's own
-  // paragraph-long plain-language reply (AddCollegeForm no longer renders
-  // that at all; it read as long and out of place next to a live-updating
-  // table that already shows the result). Auto-clears after a few seconds
-  // and immediately on the next submission.
-  const [justCompleted, setJustCompleted] = useState(false);
-  const justCompletedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  function announceCompletion() {
-    setJustCompleted(true);
-    if (justCompletedTimeout.current) clearTimeout(justCompletedTimeout.current);
-    justCompletedTimeout.current = setTimeout(() => setJustCompleted(false), 6000);
-  }
+  // Set straight from AddCollegeForm's onLoadingChange, not derived from
+  // `progress` — a brand-new submission's very first tick can land before
+  // the backend's own start_pipeline_progress write exists yet, so
+  // `progress` itself is still null for a moment right at the start. Purely
+  // a local "a request is in flight on THIS page load" flag: it resets on
+  // remount same as AddCollegeForm's own loading state does, which is fine
+  // — `progress`'s own stage (fetched fresh on mount) covers a submission
+  // still running after a navigate-away-and-back.
+  const [submitting, setSubmitting] = useState(false);
 
   const load = useCallback(() => {
     getColleges()
       .then(async (result) => {
+        // Fetch requirements/tasks BEFORE setting any state — setting
+        // `colleges` first (with an `await` before the rest catches up) let
+        // React flush a render in between, showing a college whose research
+        // just finished (researching: false) against the OLD, still-empty
+        // requirements list: a one-frame "Not researched yet" flash before
+        // the real count landed. Resolving everything first means all the
+        // setState calls land back to back in the same render.
+        const [newRequirements, newTasks] = await Promise.all([
+          result.length > 0 ? getRequirements(result.map((c) => c.id)) : Promise.resolve([]),
+          getTasks(),
+        ]);
         setColleges(result);
-        setRequirements(result.length > 0 ? await getRequirements(result.map((c) => c.id)) : []);
+        setRequirements(newRequirements);
+        setCollegeIdsWithTasks(
+          new Set(newTasks.map((t) => t.collegeId).filter((id): id is string => id !== null))
+        );
       })
       .catch(() => setError(true));
     getPipelineProgress()
@@ -78,22 +90,43 @@ export function Colleges() {
     checkPipelineStatus();
   }, [load, checkPipelineStatus]);
 
-  useEffect(() => {
-    return () => {
-      if (justCompletedTimeout.current) clearTimeout(justCompletedTimeout.current);
-    };
-  }, []);
+  // Both derived fresh from polled data every load, NOT from a local
+  // "is a submission in flight" flag — a page navigation away and back
+  // remounts this component, resetting any such flag to false even though
+  // a submission from before is still running on the backend. Basing this
+  // on the colleges/progress this mount just fetched means these reflect
+  // reality on remount instead of silently going blank (found live: this
+  // used to be tied to AddCollegeForm's onLoadingChange alone, so leaving
+  // the page mid-run and coming back showed no progress bar at all, even
+  // though research — or task planning/readiness scoring right after it —
+  // was still genuinely in flight).
+  const anyCollegeResearching = (colleges ?? []).some((c) => c.researching);
+  const isPlanning =
+    !anyCollegeResearching && progress !== null && progress.stage === "planning";
+  const isEssaysOrDone =
+    !anyCollegeResearching &&
+    progress !== null &&
+    (progress.stage === "essays" || progress.stage === "done");
 
-  // While a "research and add" submission is running, the orchestrator
-  // pipeline is writing colleges/deadlines/requirements/branding to
-  // Firestore progressively as each sub-agent finishes — poll so the table
-  // fills in live instead of only refreshing once the whole request (which
-  // can take a minute+) completes.
+  // Polls for as long as `stage` is anything other than "done" — not an OR
+  // of the specific transient flags above (anyCollegeResearching, stage ===
+  // "planning"/"essays"). Found live: that OR had a real gap between the
+  // LAST college's `researching` flag clearing and the backend's next
+  // stage-marker write actually landing — anyCollegeResearching goes false
+  // an instant before stage flips off "researching", and a poll tick
+  // landing in exactly that window read pollingActive as false, cleared
+  // the interval, and never polled again (nothing was left to flip it back
+  // on) — the page just sat there looking frozen on a stale, contradictory
+  // state even though the backend kept working. Keying off `stage` alone
+  // has no such gap: every stage transition is itself a `stage` write, so
+  // there's no moment where "not done yet" reads as "nothing to poll for."
+  const pollingActive = submitting || (progress !== null && progress.stage !== "done");
+
   useEffect(() => {
-    if (!researching) return;
+    if (!pollingActive) return;
     const interval = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [researching, load]);
+  }, [pollingActive, load]);
 
   const requirementsByCollege: Record<string, Requirement[]> = {};
   for (const requirement of requirements) {
@@ -106,19 +139,17 @@ export function Colleges() {
     );
     setResuming(true);
     setResumeError(null);
-    setResearching(true);
     try {
       const names = incomplete.map((c) => c.name);
       await sendOrchestratorMessage(
         names.length > 0
-          ? `Resume research — a previous attempt was interrupted by an error. ` +
+          ? `Resume research. A previous attempt was interrupted by an error. ` +
               `Please finish researching these colleges I'm already tracking: ${names.join(", ")}.`
-          : `Resume research — a previous attempt was interrupted by an error before it finished ` +
+          : `Resume research. A previous attempt was interrupted by an error before it finished ` +
               `planning tasks and scoring readiness for my tracked colleges. Please pick up where it left off.`
       );
       load();
       checkPipelineStatus();
-      announceCompletion();
     } catch (err) {
       setResumeError(
         err instanceof Error && err.message
@@ -127,7 +158,6 @@ export function Colleges() {
       );
     } finally {
       setResuming(false);
-      setResearching(false);
     }
   }
 
@@ -144,7 +174,6 @@ export function Colleges() {
     }
     load();
     checkPipelineStatus();
-    announceCompletion();
   }
 
   async function handleDelete(collegeId: string) {
@@ -154,35 +183,31 @@ export function Colleges() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Colleges"
-        description="Every school you're tracking, with application type, deadlines, and school colors."
-      />
+      <PageHeader title="Colleges" />
 
       <AddCollegeForm
         onDone={handleResearchDone}
         onLoadingChange={(loading) => {
-          setResearching(loading);
-          if (loading) setJustCompleted(false);
+          setSubmitting(loading);
+          // Kick off an immediate refresh the instant a submission starts,
+          // rather than waiting up to POLL_INTERVAL_MS for the first poll
+          // tick.
+          if (loading) load();
         }}
       />
 
-      {researching && progress && <ResearchProgressBar progress={progress} />}
-      {!researching && justCompleted && (
-        <Card className="border-success/40">
-          <CardContent className="flex items-center gap-2 py-4 text-sm font-medium text-success">
-            <CheckCircle2 className="h-4 w-4" />
-            Research completed
-          </CardContent>
-        </Card>
+      {anyCollegeResearching && progress && (
+        <ResearchProgressBar progress={progress} />
       )}
+      {isPlanning && <TaskPlanningProgressBar />}
+      {isEssaysOrDone && progress && <EssayProgressBar progress={progress} />}
 
       {pipelineFailed && (
         <Card className="border-warning/40">
           <CardContent className="flex items-center justify-between gap-4">
             <p className="flex items-center gap-2 text-sm text-warning">
               <AlertTriangle className="h-4 w-4 shrink-0" />
-              Research hit an error partway through — some colleges may be incomplete.
+              Research hit an error partway through, some colleges may be incomplete.
               Check Agent Activity for details, then try again.
             </p>
             <Button
@@ -222,6 +247,7 @@ export function Colleges() {
         <CollegeTable
           colleges={colleges}
           requirementsByCollege={requirementsByCollege}
+          collegeIdsWithTasks={collegeIdsWithTasks}
           onDelete={handleDelete}
         />
       )}

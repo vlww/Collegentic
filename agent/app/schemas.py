@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -261,10 +262,23 @@ class PipelineProgress(FirestoreModel):
     (orchestrator_agent.py's PerCollegeResearchAndExtraction), so a single
     "time remaining" estimate has no one consistent per-college pace to
     extrapolate from. Not used for anything else; the real per-agent detail
-    already lives in AgentRun docs (Agent Activity page)."""
+    already lives in AgentRun docs (Agent Activity page).
+
+    `stage` exists because "every college researched", "tasks planned +
+    readiness scored", and "essays structured + conflicts detected" are
+    THREE separate moments, not one — task_planning_pipeline/
+    priority_pipeline/readiness_pipeline run after every college's own
+    research finishes, and cross_college_analysis (essay_matching_pipeline +
+    conflict_pipeline) runs after THAT (orchestrator_agent.py's
+    college_intake_pipeline). Without this, the frontend's progress bar had
+    nothing to show but a frozen 100%-full bar for however long each
+    remaining stretch took — set by orchestrator_agent.py's stage-marker
+    steps around those pipelines. "done" only lands once cross_college_
+    analysis itself has actually finished, not before it starts."""
 
     total_colleges: int
     completed_colleges: int = 0
+    stage: Literal["researching", "planning", "essays", "done"] = "researching"
 
 
 # --- users/{userId}/colleges/{collegeId}/requirements/{requirementId} -------

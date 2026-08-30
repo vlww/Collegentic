@@ -16,15 +16,15 @@
 Firestore. Live behavior is covered by tests/integration/test_orchestrator_agent.py.
 """
 
-from google.adk.agents import ParallelAgent
 from google.adk.tools.agent_tool import AgentTool
 
 from app.agent import root_agent
 from app.sub_agents.orchestrator_agent import (
     college_intake_pipeline,
     cross_college_analysis,
+    detailed_research_pipeline,
     orchestrator_agent,
-    per_college_pipeline,
+    quick_research_pipeline,
 )
 
 
@@ -60,60 +60,67 @@ def test_intake_pipeline_wrapped_via_agent_tool() -> None:
 
 
 def test_intake_pipeline_stage_order() -> None:
+    """task_planning_pipeline/priority_pipeline/readiness_pipeline are
+    ordered ahead of cross_college_analysis deliberately — neither depends
+    on the other's output (see the comment above college_intake_pipeline),
+    so Tasks/Readiness don't need to sit behind two more full LLM calls
+    (conflict detection + essay matching) that don't feed either of them.
+
+    "done" is ordered AFTER cross_college_analysis, not before it — PipelineProgress.stage's
+    docstring notes the frontend used to see "done" while essay matching/
+    conflict detection were still running underneath it."""
     stage_names = [agent.name for agent in college_intake_pipeline.sub_agents]
     assert stage_names == [
         "college_intake_agent",
         "per_college_research_and_extraction",
+        "pipeline_stage_planning",
+        "task_planning_pipeline_with_retry",
+        "priority_pipeline_with_retry",
+        "readiness_pipeline_with_retry",
+        "pipeline_stage_essays",
         "cross_college_analysis",
-        "task_planning_pipeline",
-        "priority_pipeline",
-        "readiness_pipeline",
+        "pipeline_stage_done",
     ]
 
 
 def test_per_college_stage_has_no_static_sub_agents() -> None:
     """per_college_research_and_extraction deliberately does NOT declare
-    per_college_pipeline via `sub_agents=[...]` — it runs it dynamically,
-    once per college, each against its own throwaway child session (see
-    its docstring), so per_college_pipeline must stay unparented and free
-    to be reused as a fresh Runner's root agent for each of those sessions."""
+    detailed_research_pipeline/quick_research_pipeline via `sub_agents=[...]`
+    — it runs each dynamically, once per college, against its own
+    throwaway child session (see its docstring), so both must stay
+    unparented and free to be reused as a fresh Runner's root agent for
+    each of those sessions."""
     stage = next(
         agent
         for agent in college_intake_pipeline.sub_agents
         if agent.name == "per_college_research_and_extraction"
     )
     assert stage.sub_agents == []
-    assert per_college_pipeline.parent_agent is None
+    assert detailed_research_pipeline.parent_agent is None
+    assert quick_research_pipeline.parent_agent is None
 
 
-def test_per_college_pipeline_runs_quick_and_detailed_research_concurrently() -> None:
+def test_detailed_and_quick_research_pipelines_are_independently_structured() -> None:
     """detailed_research_pipeline (college_research_agent's broad pass ->
     requirements_pipeline) and quick_research_pipeline (branding_research_
     agent -> branding_extraction_agent -> deadlines_research_agent ->
-    deadlines_extraction_agent) must be genuine PARALLEL branches, not
-    sequential steps — that's what lets color/logo/deadlines land without
-    waiting on the broad pass's unrelated categories (essay prompts,
-    recommendations, ...) to finish first. See requirements_agent.py's
-    "Stage 2" comment for the full reasoning."""
-    assert isinstance(per_college_pipeline, ParallelAgent)
-    branch_names = {agent.name for agent in per_college_pipeline.sub_agents}
-    assert branch_names == {"detailed_research_pipeline", "quick_research_pipeline"}
-
-    detailed = next(
-        a for a in per_college_pipeline.sub_agents if a.name == "detailed_research_pipeline"
-    )
-    assert [a.name for a in detailed.sub_agents] == [
+    deadlines_extraction_agent) are run CONCURRENTLY for the same college,
+    each independently timed-out/retried (see orchestrator_agent.py's
+    _research_one_college) — that's what lets color/logo/deadlines land
+    without waiting on the broad pass's unrelated categories (essay
+    prompts, recommendations, ...) to finish first, and lets a hang in the
+    small branch get retried without discarding an already-succeeded
+    detailed pass. See requirements_agent.py's "Stage 2" comment for the
+    full reasoning."""
+    assert [a.name for a in detailed_research_pipeline.sub_agents] == [
         "college_research_agent",
         "requirements_pipeline",
     ]
 
-    quick = next(
-        a for a in per_college_pipeline.sub_agents if a.name == "quick_research_pipeline"
-    )
     # Branding (research then extract) must come entirely BEFORE deadlines
     # (research then extract) — not interleaved or bundled — so color/logo
     # can land without waiting on deadline queries too.
-    assert [a.name for a in quick.sub_agents] == [
+    assert [a.name for a in quick_research_pipeline.sub_agents] == [
         "branding_research_agent",
         "branding_extraction_agent",
         "deadlines_research_agent",
