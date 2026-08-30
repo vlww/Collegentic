@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { AddCollegeForm } from "@/components/collegentic/AddCollegeForm";
@@ -31,6 +32,7 @@ import type { College, PipelineProgress, Requirement } from "@/lib/types";
 const POLL_INTERVAL_MS = 700;
 
 export function Colleges() {
+  const location = useLocation();
   const [colleges, setColleges] = useState<College[] | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [collegeIdsWithTasks, setCollegeIdsWithTasks] = useState<Set<string>>(new Set());
@@ -47,7 +49,19 @@ export function Colleges() {
   // remount same as AddCollegeForm's own loading state does, which is fine
   // — `progress`'s own stage (fetched fresh on mount) covers a submission
   // still running after a navigate-away-and-back.
-  const [submitting, setSubmitting] = useState(false);
+  //
+  // Initialized true when arriving straight from Onboarding.tsx's
+  // justSubmitted nav state — a submission kicked off from THAT page has no
+  // local AddCollegeForm instance here to flip this on via onLoadingChange,
+  // and `progress` reads null for a few seconds after landing for a
+  // brand-new user (the pipeline's own first Firestore write hasn't
+  // happened yet), which would otherwise leave pollingActive false and this
+  // page frozen on an empty table until a manual refresh. Cleared
+  // automatically below the moment real data confirms the run has actually
+  // finished, rather than staying stuck on forever.
+  const [submitting, setSubmitting] = useState(
+    () => Boolean((location.state as { justSubmitted?: boolean } | null)?.justSubmitted)
+  );
 
   const load = useCallback(() => {
     getColleges()
@@ -124,9 +138,26 @@ export function Colleges() {
 
   useEffect(() => {
     if (!pollingActive) return;
-    const interval = setInterval(load, POLL_INTERVAL_MS);
+    const interval = setInterval(() => {
+      load();
+      checkPipelineStatus();
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [pollingActive, load]);
+  }, [pollingActive, load, checkPipelineStatus]);
+
+  // Clears the bootstrap-from-Onboarding case (see `submitting`'s own
+  // comment above) once real data confirms the run is genuinely done —
+  // otherwise a submission that started on Onboarding.tsx, with no local
+  // AddCollegeForm here to flip `submitting` off via onLoadingChange, would
+  // leave this page polling every 700ms indefinitely for as long as the tab
+  // stays open. Harmless no-op for the Colleges-page-native AddCollegeForm
+  // path (onLoadingChange already clears `submitting` right as the awaited
+  // request resolves, at essentially the same moment).
+  useEffect(() => {
+    if (submitting && progress?.stage === "done" && !anyCollegeResearching) {
+      setSubmitting(false);
+    }
+  }, [submitting, progress, anyCollegeResearching]);
 
   const requirementsByCollege: Record<string, Requirement[]> = {};
   for (const requirement of requirements) {

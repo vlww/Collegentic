@@ -14,6 +14,14 @@ interface AddCollegeFormProps {
   /** Fires around the request so a caller can poll for progress while it's
    * in flight — see CollegeTable's live-update polling in Colleges.tsx. */
   onLoadingChange?: (loading: boolean) => void;
+  /** Fires the instant a valid submission starts, BEFORE the (slow) research
+   * request is awaited — for a caller that wants to react immediately
+   * rather than wait for `onDone` (e.g. Onboarding.tsx navigating to
+   * /colleges right away instead of sitting on a spinner until a minute-plus
+   * research call finishes). Not called on Colleges.tsx's own usage — there
+   * the student is already on the page that shows live progress, so there's
+   * nothing for an immediate callback to do. */
+  onSubmitStart?: () => void;
 }
 
 /**
@@ -23,7 +31,11 @@ interface AddCollegeFormProps {
  * this writes progressively while it waits (see `onLoadingChange`); the
  * Agent Activity page (Milestone 13) has the per-agent detail.
  */
-export function AddCollegeForm({ onDone, onLoadingChange }: AddCollegeFormProps) {
+export function AddCollegeForm({
+  onDone,
+  onLoadingChange,
+  onSubmitStart,
+}: AddCollegeFormProps) {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +43,7 @@ export function AddCollegeForm({ onDone, onLoadingChange }: AddCollegeFormProps)
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!message.trim() || loading) return;
+    onSubmitStart?.();
     setLoading(true);
     onLoadingChange?.(true);
     setError(null);
