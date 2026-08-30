@@ -36,18 +36,37 @@ const MAX_VISIBLE_MATCHES = 60;
 // sit (not just a spacing-force tweak, an actual smaller minimum distance),
 // which is what let the tighter spacing forces below actually compact the
 // layout instead of immediately hitting that collide floor — the two only
-// compound this way if changed together. Net effect verified directly (not
-// just by inspection): a representative profile's settled layout width
-// dropped from ~950px to ~730px, meaning noticeably LESS scale-down is
-// needed to fit a typical card, so nodes render bigger on screen despite
-// their smaller nominal size.
-const PROMPT_WIDTH = 150;
+// compound this way if changed together.
+//
+// Trimmed a second time — found live (measured directly, not just by
+// inspection): forceCollide's floor is `PROMPT_RADIUS + MATERIAL_RADIUS`,
+// and for essentially every real match score, `linkDistance` below asked
+// for something SHORTER than that floor — meaning collide, not the match
+// score, was the thing actually deciding every link's length, and every
+// match (a 95% fit and a 55% fit alike) settled at the exact same
+// distance. The two levers: `PAD` (the invisible buffer added past each
+// box's own half-WIDTH, not the box's visible size — see PROMPT_RADIUS/
+// MATERIAL_RADIUS below), cut hard (10 -> 3); and WIDTH itself, trimmed
+// more mildly to protect the line-clamped label text inside each bubble.
+// HEIGHT is NOT part of this: the collision radius below is derived from
+// WIDTH alone (both bubbles are treated as circles sized by their half-
+// width for the physics, regardless of their actual box height), so a
+// first attempt at also shrinking PROMPT_HEIGHT bought zero compaction
+// and only cost text — a school name that wraps to 2 lines (e.g.
+// "University of Texas at Austin") plus 2 lines of prompt text needs the
+// original ~72px to not overflow its own box. Verified against both a
+// small real profile (6 links: an 800x795 layout dropped to 564x497, and
+// every link actually shortened instead of all landing on the same
+// collide-floor distance) and a larger synthetic one (16 links, 6
+// colleges: 797x910 -> 766x633).
+const PROMPT_WIDTH = 138;
 const PROMPT_HEIGHT = 72;
-const MATERIAL_WIDTH = 128;
-const MATERIAL_HEIGHT = 38;
+const MATERIAL_WIDTH = 116;
+const MATERIAL_HEIGHT = 32;
 const CANVAS_MARGIN = 24;
-const PROMPT_RADIUS = PROMPT_WIDTH / 2 + 10;
-const MATERIAL_RADIUS = MATERIAL_WIDTH / 2 + 10;
+const NODE_RADIUS_PAD = 3;
+const PROMPT_RADIUS = PROMPT_WIDTH / 2 + NODE_RADIUS_PAD;
+const MATERIAL_RADIUS = MATERIAL_WIDTH / 2 + NODE_RADIUS_PAD;
 
 // How far apart a match's two nodes settle, continuously across the whole
 // score range — a 95% fit and a 5% fit are visibly different distances,
@@ -61,8 +80,8 @@ const MATERIAL_RADIUS = MATERIAL_WIDTH / 2 + 10;
 // also what breaks up the "everything in a perfect circle" look a purely
 // radial layout always has, since a node's final position depends on
 // every match pulling on it, not just its own hub's ring math.
-const MIN_LINK_DISTANCE = 65;
-const MAX_LINK_DISTANCE = 190;
+const MIN_LINK_DISTANCE = 25;
+const MAX_LINK_DISTANCE = 95;
 
 function linkDistance(score: number): number {
   const t = Math.min(1, Math.max(0, (100 - score) / 100));
@@ -120,7 +139,7 @@ interface Layout {
 // material nodes away from *other* material nodes (ignored below this
 // distance) fixes that specifically, without changing how tightly a
 // prompt sits to the material it's actually connected to.
-const MATERIAL_SEPARATION = 160;
+const MATERIAL_SEPARATION = 95;
 
 function materialSeparationForce(nodes: GraphNode[]) {
   const materials = nodes.filter((n) => n.kind === "material");
@@ -187,7 +206,7 @@ function layoutGraph(
     // to have to fight down to zero once collide+link settle, so the graph
     // relaxes into a visibly tighter cluster instead of a wide-open one
     // scale-to-fit then has to shrink hard to make room for.
-    .force("charge", forceManyBody().strength(-140))
+    .force("charge", forceManyBody().strength(-80))
     .force(
       "link",
       forceLink<GraphNode, GraphLink>(simLinks)
@@ -211,8 +230,8 @@ function layoutGraph(
     // charge/link/separation values above, so the extra pull-to-center
     // compounds with the reduced repulsion rather than just compensating
     // for it back to the same size.
-    .force("x", forceX(0).strength(0.08))
-    .force("y", forceY(0).strength(0.05))
+    .force("x", forceX(0).strength(0.13))
+    .force("y", forceY(0).strength(0.11))
     .force("materialSeparation", materialSeparationForce(nodes))
     .stop();
 
