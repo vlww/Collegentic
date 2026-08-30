@@ -64,9 +64,26 @@ const PROMPT_HEIGHT = 72;
 const MATERIAL_WIDTH = 116;
 const MATERIAL_HEIGHT = 32;
 const CANVAS_MARGIN = 24;
-const NODE_RADIUS_PAD = 3;
-const PROMPT_RADIUS = PROMPT_WIDTH / 2 + NODE_RADIUS_PAD;
-const MATERIAL_RADIUS = MATERIAL_WIDTH / 2 + NODE_RADIUS_PAD;
+// A visible minimum gap between bubbles, on top of the geometry below.
+const NODE_RADIUS_PAD = 4;
+// forceCollide only ever enforces a CIRCLE-to-circle minimum distance, so
+// the radius has to fully contain each bubble's actual rectangle in every
+// direction to guarantee no visible overlap — that means the rectangle's
+// HALF-DIAGONAL, not its half-width. Found live: using half-width alone
+// (PROMPT_WIDTH / 2 + pad) undersized the circle for these wide-flat
+// bubbles (138x72 prompt boxes, corners ~78px from center vs. a
+// width-based radius of ~72px) — d3-force reported zero collide
+// violations (the CIRCLES genuinely didn't overlap), yet the real
+// rendered rectangles clipped by a pixel or two at the corners whenever
+// two bubbles settled near-diagonal to each other, which is exactly the
+// "bubbles slightly overlapping" seen live. Verified via a standalone
+// check comparing true axis-aligned rectangle overlap (not circle
+// distance) before and after: half-width-based radius produced real ~1-4px
+// rectangle overlaps on a real profile's settled layout; half-diagonal-
+// based radius produced zero, with every pair at least NODE_RADIUS_PAD
+// apart.
+const PROMPT_RADIUS = Math.hypot(PROMPT_WIDTH / 2, PROMPT_HEIGHT / 2) + NODE_RADIUS_PAD;
+const MATERIAL_RADIUS = Math.hypot(MATERIAL_WIDTH / 2, MATERIAL_HEIGHT / 2) + NODE_RADIUS_PAD;
 
 // How far apart a match's two nodes settle, continuously across the whole
 // score range — a 95% fit and a 5% fit are visibly different distances,
