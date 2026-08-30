@@ -209,6 +209,35 @@ def set_test_scores_submitted(user_id: str, submitted: bool) -> None:
     _user_doc(user_id).set({_TEST_SCORES_SUBMITTED_FIELD: submitted}, merge=True)
 
 
+_TEST_SCORE_KIND_FIELD = "testScoreKind"
+_TEST_SCORE_VALUE_FIELD = "testScoreValue"
+
+
+def get_test_score_details(user_id: str) -> dict:
+    """Which test (SAT/ACT) and what score the student typed in My
+    Progress — separate from get_test_scores_submitted above, which is the
+    only piece compute_readiness_score actually reads (see that function's
+    own docstring: readiness only cares WHETHER scores are submitted, not
+    which test or number). Found live: these two fields only ever lived in
+    local React state on the frontend, silently lost on every refresh or
+    remount — never actually round-tripped through Firestore at all.
+    Same "account-wide, not per college" reasoning as testScoresSubmitted."""
+    doc = _user_doc(user_id).get()
+    if not doc.exists:
+        return {"kind": "SAT", "score": ""}
+    data = doc.to_dict() or {}
+    return {
+        "kind": data.get(_TEST_SCORE_KIND_FIELD) or "SAT",
+        "score": data.get(_TEST_SCORE_VALUE_FIELD) or "",
+    }
+
+
+def set_test_score_details(user_id: str, kind: str, score: str) -> None:
+    _user_doc(user_id).set(
+        {_TEST_SCORE_KIND_FIELD: kind, _TEST_SCORE_VALUE_FIELD: score}, merge=True
+    )
+
+
 # --- Colleges ---------------------------------------------------------------
 
 

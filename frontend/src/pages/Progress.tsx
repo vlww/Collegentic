@@ -244,11 +244,10 @@ export function Progress() {
   const [colleges, setColleges] = useState<College[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [testScoresSubmitted, setTestScoresSubmitted] = useState(false);
-  // Cosmetic only — which test and what score, unlike testScoresSubmitted
-  // above, isn't persisted anywhere or read by compute_readiness_score.
-  // Readiness only cares whether scores are submitted at all, not which
-  // test or what number — this is just here so the page doesn't feel like
-  // it's missing the obvious fields a "test scores" section should have.
+  // Which test and what score — round-trips through Firestore alongside
+  // testScoresSubmitted (see updateTestScores' docstring), but isn't read
+  // by compute_readiness_score: readiness only cares whether scores are
+  // submitted at all, not which test or what number.
   const [testKind, setTestKind] = useState<"SAT" | "ACT">("SAT");
   const [testScore, setTestScore] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -270,6 +269,8 @@ export function Progress() {
     getRecommendations().then(setRecommendations);
     getTestScores().then((result) => {
       setTestScoresSubmitted(result.submitted);
+      setTestKind(result.kind);
+      setTestScore(result.score);
       setLoaded(true);
     });
   }, []);
@@ -286,9 +287,39 @@ export function Progress() {
     if (submitted === testScoresSubmitted) return;
     setSavingTestScores(true);
     try {
-      await updateTestScores(submitted);
+      await updateTestScores({ submitted, kind: testKind, score: testScore });
       setTestScoresSubmitted(submitted);
       await recomputeReadiness();
+    } finally {
+      setSavingTestScores(false);
+    }
+  }
+
+  // Saves kind/score as soon as either actually changes — a Select's
+  // onValueChange fires once per real choice, so that one saves
+  // immediately; the score Input instead saves on blur (see its onBlur
+  // below) so typing a multi-digit score doesn't fire a request per
+  // keystroke. Both always resend the full current state (including
+  // `submitted`), same as handleTestScoresChange — the backend has no
+  // notion of a partial update here (see TestScoresUpdate's docstring).
+  async function handleTestKindChange(kind: "SAT" | "ACT") {
+    setTestKind(kind);
+    setSavingTestScores(true);
+    try {
+      await updateTestScores({ submitted: testScoresSubmitted, kind, score: testScore });
+    } finally {
+      setSavingTestScores(false);
+    }
+  }
+
+  async function handleTestScoreBlur() {
+    setSavingTestScores(true);
+    try {
+      await updateTestScores({
+        submitted: testScoresSubmitted,
+        kind: testKind,
+        score: testScore,
+      });
     } finally {
       setSavingTestScores(false);
     }
@@ -326,7 +357,10 @@ export function Progress() {
       <SectionCard title="Standardized Test Scores" icon={GraduationCap}>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Select value={testKind} onValueChange={(value) => setTestKind(value as "SAT" | "ACT")}>
+            <Select
+              value={testKind}
+              onValueChange={(value) => handleTestKindChange(value as "SAT" | "ACT")}
+            >
               <SelectTrigger size="sm" className="h-8 w-24 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -338,6 +372,7 @@ export function Progress() {
             <Input
               value={testScore}
               onChange={(e) => setTestScore(e.target.value)}
+              onBlur={handleTestScoreBlur}
               placeholder="Score"
               className="h-8 w-28 text-xs"
             />

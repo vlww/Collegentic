@@ -169,16 +169,27 @@ export function recomputeReadiness(): Promise<College[]> {
   return apiFetch("/api/readiness/recompute", { method: "POST" });
 }
 
-/** My Progress' Test Scores toggle — a single account-wide answer, not per
- * college (see app/tools/scoring.py's compute_readiness_score). */
-export function getTestScores(): Promise<{ submitted: boolean }> {
+/** My Progress' Test Scores section — a single account-wide answer, not
+ * per college (see app/tools/scoring.py's compute_readiness_score). `kind`/
+ * `score` round-trip through Firestore alongside `submitted` now (found
+ * live: they used to be pure local React state, lost on every refresh). */
+export interface TestScores {
+  submitted: boolean;
+  kind: "SAT" | "ACT";
+  score: string;
+}
+
+export function getTestScores(): Promise<TestScores> {
   return apiFetch("/api/test-scores");
 }
 
-export function updateTestScores(submitted: boolean): Promise<{ submitted: boolean }> {
+/** Always sends the full current kind/score alongside `submitted` — even
+ * the Submitted/Not Submitted toggle round-trips whatever's already on
+ * screen, since the backend has no notion of a partial update here. */
+export function updateTestScores(scores: TestScores): Promise<TestScores> {
   return apiFetch("/api/test-scores", {
     method: "PUT",
-    body: JSON.stringify({ submitted }),
+    body: JSON.stringify(scores),
   });
 }
 

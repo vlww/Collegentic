@@ -41,6 +41,7 @@ import logging
 import re
 import time
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from google.adk.runners import InMemoryRunner
@@ -505,11 +506,24 @@ def recompute_readiness(user_id: str = Depends(require_user_id)) -> list[dict]:
 
 @router.get("/test-scores")
 def get_test_scores(user_id: str = Depends(require_user_id)) -> dict:
-    return {"submitted": ft.get_test_scores_submitted(user_id)}
+    details = ft.get_test_score_details(user_id)
+    return {
+        "submitted": ft.get_test_scores_submitted(user_id),
+        "kind": details["kind"],
+        "score": details["score"],
+    }
 
 
 class TestScoresUpdate(BaseModel):
     submitted: bool
+    # Always sent by the frontend alongside `submitted` (even the Submitted/
+    # Not Submitted toggle round-trips whatever kind/score is already on
+    # screen) — see get_test_score_details' docstring for why these are
+    # separate fields from `submitted` rather than folded into one, and
+    # frontend/src/pages/Progress.tsx for why the frontend never sends a
+    # partial update.
+    kind: Literal["SAT", "ACT"]
+    score: str
 
 
 @router.put("/test-scores")
@@ -517,7 +531,8 @@ def update_test_scores(
     body: TestScoresUpdate, user_id: str = Depends(require_user_id)
 ) -> dict:
     ft.set_test_scores_submitted(user_id, body.submitted)
-    return {"submitted": body.submitted}
+    ft.set_test_score_details(user_id, body.kind, body.score)
+    return {"submitted": body.submitted, "kind": body.kind, "score": body.score}
 
 
 @router.get("/recommendations")

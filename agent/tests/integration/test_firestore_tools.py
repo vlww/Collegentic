@@ -187,6 +187,12 @@ def test_test_scores_submitted_defaults_false_then_round_trips(user_id: str) -> 
     assert ft.get_test_scores_submitted(user_id) is True
 
 
+def test_test_score_details_default_then_round_trips(user_id: str) -> None:
+    assert ft.get_test_score_details(user_id) == {"kind": "SAT", "score": ""}
+    ft.set_test_score_details(user_id, "ACT", "34")
+    assert ft.get_test_score_details(user_id) == {"kind": "ACT", "score": "34"}
+
+
 def test_get_research_sources_by_ids(user_id: str) -> None:
     """Powers the frontend's "View Source" feature (Milestone 6)."""
     college_id = ft.save_college(user_id, College(name="MIT"))
