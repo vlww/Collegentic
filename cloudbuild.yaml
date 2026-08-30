@@ -1,0 +1,83 @@
+# Cloud Build config for the collegentic-git Cloud Run trigger (auto-deploy
+# on push to main, via Developer Connect). Not used by the manual
+# `agents-cli deploy` / `gcloud run deploy` flow, which builds agent/Dockerfile
+# directly after running agent/scripts/build_frontend.sh locally.
+#
+# The console's auto-generated trigger assumed a Dockerfile at the repo
+# root — this repo has frontend/ and agent/ as siblings instead, and
+# agent/Dockerfile expects the frontend already built into
+# agent/frontend_dist (see agent/scripts/build_frontend.sh). This file does
+# that build step first, then builds/pushes/deploys agent/Dockerfile.
+steps:
+  - id: Build frontend
+    name: node:20-slim
+    dir: frontend
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        npm ci
+        npm run build
+        rm -rf ../agent/frontend_dist
+        cp -r dist ../agent/frontend_dist
+        touch ../agent/frontend_dist/.gitkeep
+
+  - id: Pull
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        docker pull $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:latest || exit 0
+
+  - id: Build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --cache-from
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:latest
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:latest
+      - agent
+
+  - id: Push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME
+
+  - id: Deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - $_SERVICE_NAME
+      - --image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - --update-labels=managed-by=gcp-cloud-build-deploy-cloud-run,gcb-trigger-id=$_TRIGGER_ID,gcb-trigger-region=$LOCATION,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID
+      - --region=$_DEPLOY_REGION
+      - --quiet
+
+images:
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  REPO_NAME: vlww-collegentic
+  _AR_HOSTNAME: europe-west1-docker.pkg.dev
+  _AR_PROJECT_ID: collegentic-hackathon
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _DEPLOY_REGION: europe-west1
+  _SERVICE_NAME: collegentic-git
+  _TRIGGER_ID: f0362248-d35c-4fb7-9521-fe998e7f56c5
+
+tags:
+  - gcp-cloud-build-deploy-cloud-run
+  - collegentic-git
