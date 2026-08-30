@@ -19,28 +19,38 @@ for human input when needed.**
 
 A student names the colleges they're applying to (natural language, or a
 short list). `orchestrator_agent` parses that into a clean list and hands the
-real work to a seven-stage pipeline as a single tool call:
+real work to a multi-stage pipeline as a single tool call, every requested
+college researched concurrently:
 
 1. **Identify** which named colleges are new vs. already tracked.
 2. **Research** each new college from official sources (`google_search`,
-   admissions/financial-aid pages preferred over secondary sources).
-3. **Extract** structured, sourced requirements — with a confidence-checking
-   refinement loop that does one targeted follow-up search when a finding is
-   uncertain, rather than guessing.
-4. **Detect conflicts** across colleges (recommendation policy differences,
+   admissions/financial-aid pages preferred over secondary sources) —
+   a fast branding/deadlines pass and a broader, slower requirements pass run
+   concurrently for each college.
+3. **Extract** structured, sourced requirements from the broader pass — with
+   a confidence-checking refinement loop that does one targeted follow-up
+   search when a finding is uncertain, rather than guessing.
+4. **Plan tasks** from the full requirement set.
+5. **Score priority** for every task (deterministic formula + Gemini
+   explanation) and **score readiness** for every college (deterministic
+   formula + Gemini explanation).
+6. **Detect conflicts** across colleges (recommendation policy differences,
    deadline clustering, ...) and **match** the student's existing essays
    against new prompts — concurrently, since neither depends on the other.
-5. **Plan tasks** from the full requirement set.
-6. **Score priority** for every task (deterministic formula + LLM explanation).
-7. **Score readiness** for every college (deterministic formula + LLM
-   explanation).
+   Essay matching is plain deterministic Python (keyword-bucket
+   categorization), not an LLM call.
 
 Nothing here is invented: a requirement with no source, or a low-confidence
 extraction, is surfaced as "needs verification," never guessed. Agents never
 submit an application, submit an essay, or mark something "Complete" from
 inference alone without a human approval step.
 
-Full architecture diagrams (system + agent pipeline) are in
+The Essay Editor (a grammar/spelling checker on the Essays page) is the one
+place a Gemma model runs — Gemma takes a fast first pass, then Gemini 3.6
+Flash always does its own independent check regardless of what Gemma finds.
+
+Full architecture diagrams (system + full agent pipeline + essay matching +
+the Essay Editor's grammar check) are in
 [`docs/architecture-diagram.md`](docs/architecture-diagram.md). The full
 technical spec — every scoring formula, every Firestore schema, and the
 build-by-build record of what was found and fixed — is in
@@ -50,7 +60,8 @@ build-by-build record of what was found and fixed — is in
 flowchart LR
     Browser["Browser (React SPA)"] --> CloudRun["Cloud Run<br/>FastAPI + ADK agent runtime"]
     CloudRun --> Firestore[("Firestore")]
-    CloudRun --> Vertex["Vertex AI (Gemini)"]
+    CloudRun --> Vertex["Vertex AI (Gemini 3.6 Flash)"]
+    CloudRun --> AIStudio["Google AI Studio (Gemma 4)"]
 ```
 
 ## Project layout
@@ -58,7 +69,7 @@ flowchart LR
 ```
 agent/
   app/
-    sub_agents/            # orchestrator_agent + the 7-stage pipeline (see docs/architecture-diagram.md)
+    sub_agents/            # orchestrator_agent + the college-research pipeline (see docs/architecture-diagram.md)
     tools/                 # firestore_tools.py, scoring.py (deterministic formulas)
     api.py                 # REST routes, mounted at /api
     fast_api_app.py        # ADK app + REST routes + bundled frontend, one Cloud Run service
