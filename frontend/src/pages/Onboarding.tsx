@@ -7,21 +7,20 @@ import { Card, CardContent } from "@/components/ui/card";
 import { getColleges, startDemoSession } from "@/lib/api";
 import logo from "@/assets/logo.png";
 
-// 8-direction stacked drop-shadow — the standard way to fake a solid
-// outline around a transparent PNG's actual silhouette in CSS (a single
-// drop-shadow only offsets one copy; `filter` accepts a space-separated
-// list of drop-shadows natively, unlike Tailwind's own drop-shadow-[...]
-// utility, which overwrites rather than stacks when repeated).
-const LOGO_OUTLINE_FILTER = [
-  "drop-shadow(2px 0 0 #fff)",
-  "drop-shadow(-2px 0 0 #fff)",
-  "drop-shadow(0 2px 0 #fff)",
-  "drop-shadow(0 -2px 0 #fff)",
-  "drop-shadow(1.4px 1.4px 0 #fff)",
-  "drop-shadow(-1.4px 1.4px 0 #fff)",
-  "drop-shadow(1.4px -1.4px 0 #fff)",
-  "drop-shadow(-1.4px -1.4px 0 #fff)",
-].join(" ");
+// 12-direction stacked drop-shadow, each with its own small blur — the
+// standard way to fake a solid outline around a transparent PNG's actual
+// silhouette in CSS (a single drop-shadow only offsets one copy; `filter`
+// accepts a space-separated list of drop-shadows natively, unlike
+// Tailwind's own drop-shadow-[...] utility, which overwrites rather than
+// stacks when repeated). More directions (was 8) plus a touch of blur (was
+// a hard 0) rounds the corners the 8-direction version left visibly
+// faceted and softens the edge instead of a crisp cutout ring.
+const LOGO_OUTLINE_FILTER = Array.from({ length: 12 }, (_, i) => {
+  const angle = (i / 12) * 2 * Math.PI;
+  const x = (1.6 * Math.cos(angle)).toFixed(2);
+  const y = (1.6 * Math.sin(angle)).toFixed(2);
+  return `drop-shadow(${x}px ${y}px 0.5px #fff)`;
+}).join(" ");
 
 /**
  * Pre-sidebar full-screen route — .agents-cli-spec.md § Frontend Structure:
@@ -77,7 +76,7 @@ export function Onboarding() {
             style={{ filter: LOGO_OUTLINE_FILTER }}
           />
           <span
-            className="uppercase text-4xl leading-none text-white"
+            className="uppercase text-6xl leading-none text-white"
             style={{ fontFamily: "'Maintanker', sans-serif" }}
           >
             Collegentic
