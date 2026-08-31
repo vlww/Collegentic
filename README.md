@@ -1,6 +1,6 @@
 # Collegentic
 
-Collegentic is an autonomous college-application platform! It incorporates a multi-agent system (Google ADK +
+Collegentic is an autonomous college-application platform that utilizes Agentic AI to reduce the workload for students. It incorporates a multi-agent system (Google ADK +
 Gemini) to research college requirements from official sources, detect
 conflicts across schools, match existing essay ideas to new prompts, prioritize
 work, and maintain a dashboard of what to do next. Built for Google Cloud's "All
