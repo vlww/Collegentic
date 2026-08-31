@@ -15,7 +15,8 @@ real research pipeline run live! You can also click **Try Demo Mode** on the lan
 screen for a pre-seeded profile including 6 colleges, a real recommendation conflict,
 and overlapping essay prompts with zero wait.
 
-> The hosted instance may run a little slower than a local build. I capped
+> The hosted instance may take a few minutes to load when you first run it as the Cloud Run service may scale down when it isn't being used.
+> Additionally, the platform may run a little slower than a local build, as I capped
 > `max-instances` at 3 to control costs and reduce the risk of going over budget.
 > Thanks for understanding!
 
