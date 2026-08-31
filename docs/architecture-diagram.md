@@ -19,35 +19,7 @@ at all (confirmed live: `client.models.list()` against Vertex lists 24
 Gemini models and zero Gemma ones), so the grammar check's Gemma call is
 routed through AI Studio via its own API key instead.
 
-```mermaid
-flowchart TB
-    Browser["Browser (React SPA)<br/>Colleges · Essay Map · Essay Editor · ..."]
-    A2AClient["External A2A client<br/>(e.g. Gemini Enterprise)"]
-
-    subgraph CloudRun["Cloud Run service — one image, one URL"]
-        Static["Static files<br/>frontend_dist/ (Vite build)"]
-        REST["REST API<br/>/api/* (app/api.py)"]
-        AgentRuntime["ADK agent runtime<br/>orchestrator_agent + college_intake_pipeline"]
-        A2ASurface["A2A surface<br/>/a2a/app (JSON-RPC + agent card)"]
-    end
-
-    Firestore[("Firestore<br/>users/{userId}/...")]
-    VertexAI["Vertex AI<br/>Gemini 3.6 Flash + Search grounding"]
-    AIStudio["Google AI Studio<br/>Gemma 4 (26B-A4B, MoE)"]
-
-    Browser -- "GET / and client routes" --> Static
-    Browser -- "GET/POST/PUT/DELETE /api/*" --> REST
-    Browser -- "POST /api/orchestrator/messages" --> AgentRuntime
-    A2AClient -- "JSON-RPC" --> A2ASurface
-    A2ASurface --> AgentRuntime
-
-    REST -- "CRUD" --> Firestore
-    REST -. "essay reuse match<br/>(deterministic, no LLM)" .-> Firestore
-    REST -- "POST /api/grammar-check<br/>1st pass" --> AIStudio
-    REST -- "POST /api/grammar-check<br/>2nd, independent pass" --> VertexAI
-    AgentRuntime --> Firestore
-    AgentRuntime --> VertexAI
-```
+![System / deployment diagram](assets/architecture-01-deployment.png)
 
 Notes on choices this reflects (see `.agents-cli-spec.md` for the full
 reasoning trail):
@@ -84,46 +56,7 @@ means, then hands off the actual work as a single `AgentTool` call to
 `college_intake_pipeline`, and turns the result into a plain-language
 summary. It does no research or extraction itself.
 
-```mermaid
-flowchart TB
-    Orchestrator["orchestrator_agent (root LlmAgent)<br/>Gemini 3.6 Flash — parses college names, summarizes results"]
-
-    Intake1["1. college_intake_agent<br/>which names are new vs. already tracked"]
-
-    subgraph PerCollege["2. per_college_research_and_extraction<br/>EVERY new college researched concurrently, each in its own isolated session"]
-        direction LR
-        subgraph Detailed["detailed_research_pipeline"]
-            direction TB
-            Research["college_research_agent<br/>Gemini 3.6 Flash + google_search<br/>(deadlines, testing, essays, recs, ...)"]
-            ReqLoop["requirements_confidence_loop<br/>findings_evaluator (Gemini) grades findings,<br/>on 'fail' -> targeted follow-up google_search<br/>(max 1 iteration)"]
-            ReqAgent["requirements_agent<br/>Gemini 3.6 Flash<br/>structures Requirement + ResearchSource docs"]
-            Research --> ReqLoop --> ReqAgent
-        end
-        subgraph Quick["quick_research_pipeline (runs concurrently with Detailed)"]
-            direction TB
-            BrandR["branding_research_agent<br/>Gemini 3.6 Flash + google_search<br/>(brand color only)"]
-            BrandX["branding_extraction_agent<br/>+ deterministic logo lookup<br/>(logobrands.com / Wikipedia)"]
-            DeadR["deadlines_research_agent<br/>Gemini 3.6 Flash + google_search"]
-            DeadX["deadlines_extraction_agent"]
-            BrandR --> BrandX --> DeadR --> DeadX
-        end
-    end
-
-    Plan["3. task_planning_pipeline<br/>Gemini 3.6 Flash — Requirements to Tasks"]
-    Priority["4. priority_pipeline<br/>compute_priority_score (code) +<br/>Gemini 3.6 Flash explanation, batched"]
-    Readiness["5. readiness_pipeline<br/>compute_readiness_score (code) +<br/>Gemini 3.6 Flash explanation, batched"]
-
-    subgraph CrossCollege["6. cross_college_analysis — runs concurrently"]
-        direction LR
-        Conflict["conflict_pipeline<br/>Gemini 3.6 Flash, no tools<br/>(reads Requirements + Recommendations)"]
-        EssayMatch["essay_matching_pipeline<br/>deterministic keyword match — no LLM<br/>(see below)"]
-    end
-
-    Orchestrator -- "AgentTool(college_intake_pipeline)" --> Intake1
-    Intake1 --> PerCollege
-    PerCollege --> Plan --> Priority --> Readiness --> CrossCollege
-    CrossCollege -. "state_delta forwarded back<br/>(findings, tasks, conflicts, essay matches)" .-> Orchestrator
-```
+![Multi-agent research pipeline diagram](assets/architecture-02-pipeline.png)
 
 Every college requested in the same message runs stage 2 concurrently (not
 one college fully at a time), and within one college, its `Detailed` and
@@ -187,13 +120,7 @@ it fires directly and synchronously from material CRUD too, so adding an
 essay connects it to matching prompts immediately instead of only after the
 student's next research run:
 
-```mermaid
-flowchart LR
-    A["New EssayPrompt<br/>(cross_college_analysis, after research)"] --> C["recompute_essay_matches()<br/>keyword-bucket categorizer — pure Python, no network call"]
-    B["POST/PUT/DELETE /api/materials<br/>(student adds/edits/removes an essay)"] --> C
-    C --> D[("Firestore<br/>EssayMatch docs")]
-    D --> E["Essay Map<br/>(EssayNetworkGraph, Essays page)"]
-```
+![Essay reuse matching diagram](assets/architecture-03-essay-matching.png)
 
 ## Essay Editor grammar check (Gemma + Gemini)
 
@@ -205,17 +132,7 @@ Editor via `POST /api/grammar-check` — a plain REST route
 Two models, not one, and Gemini always runs regardless of what Gemma
 returns:
 
-```mermaid
-flowchart LR
-    Editor["Essay Editor<br/>(Essays page)"] -- "POST /api/grammar-check<br/>{ text }" --> Check["check_grammar()<br/>app/tools/grammar_check.py"]
-    Check -- "1st pass, ~10s budget" --> Gemma["Gemma 4 26B-A4B<br/>(Google AI Studio)"]
-    Gemma -- "candidate issues<br/>(a hint, not a gate — see below)" --> Check
-    Check -- "independent full re-check,<br/>candidates folded in only as a hint" --> Gemini["Gemini 3.6 Flash<br/>(Vertex AI)"]
-    Gemini -- "grammar/spelling issues, structured JSON" --> Check
-    Check -- "grounded: only issues whose flagged<br/>text is a literal substring of the essay" --> Editor
-    Editor -- "click a highlight" --> Apply["Fix applied client-side"]
-    Apply -- "Save Essay" --> SaveRoute["PUT /api/materials/:id"]
-```
+![Essay Editor grammar check diagram](assets/architecture-04-grammar-check.png)
 
 - **Gemma 4, 26B-A4B-it** (a mixture-of-experts model, 26B total params, ~4B
   active) does a fast first pass. It's genuinely a smaller, less reliable

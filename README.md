@@ -6,89 +6,28 @@ conflicts across schools, matches existing essays to new prompts, prioritizes
 work, and keeps a dashboard of what to do next — built for Google Cloud's "All
 Things Agentic Hackathon" (Taskmaster track).
 
-**Live demo:** https://agent-74535340651.us-central1.run.app — click "Try Demo
-Mode" for a pre-seeded profile (6 colleges, a real recommendation conflict,
-overlapping essay prompts) with zero setup, or type in real colleges to see
-the actual research pipeline run.
-
 It is not a chatbot with a research button. The path is: **goal → plan →
 research → analyze → compare → create tasks → prioritize → update state → ask
 for human input when needed.**
 
-## How it works
+## Try it now
 
-A student names the colleges they're applying to (natural language, or a
-short list). `orchestrator_agent` parses that into a clean list and hands the
-real work to a multi-stage pipeline as a single tool call, every requested
-college researched concurrently:
+**https://collegentic-git-74535340651.europe-west1.run.app**
 
-1. **Identify** which named colleges are new vs. already tracked.
-2. **Research** each new college from official sources (`google_search`,
-   admissions/financial-aid pages preferred over secondary sources) —
-   a fast branding/deadlines pass and a broader, slower requirements pass run
-   concurrently for each college.
-3. **Extract** structured, sourced requirements from the broader pass — with
-   a confidence-checking refinement loop that does one targeted follow-up
-   search when a finding is uncertain, rather than guessing.
-4. **Plan tasks** from the full requirement set.
-5. **Score priority** for every task (deterministic formula + Gemini
-   explanation) and **score readiness** for every college (deterministic
-   formula + Gemini explanation).
-6. **Detect conflicts** across colleges (recommendation policy differences,
-   deadline clustering, ...) and **match** the student's existing essays
-   against new prompts — concurrently, since neither depends on the other.
-   Essay matching is plain deterministic Python (keyword-bucket
-   categorization), not an LLM call.
+Enter any college names you want (e.g. "MIT, Rice, Stanford") to watch the
+real research pipeline run live — or click **Try Demo Mode** on the landing
+screen for a pre-seeded profile (6 colleges, a real recommendation conflict,
+overlapping essay prompts) with zero wait.
 
-Nothing here is invented: a requirement with no source, or a low-confidence
-extraction, is surfaced as "needs verification," never guessed. Agents never
-submit an application, submit an essay, or mark something "Complete" from
-inference alone without a human approval step.
+> The hosted instance may run a little slower than a local build — I capped
+> `max-instances` at 3 to control cost after going over the hackathon's $150
+> budget. Thanks for understanding!
 
-The Essay Editor (a grammar/spelling checker on the Essays page) is the one
-place a Gemma model runs — Gemma takes a fast first pass, then Gemini 3.6
-Flash always does its own independent check regardless of what Gemma finds.
+## Run it yourself
 
-Full architecture diagrams (system + full agent pipeline + essay matching +
-the Essay Editor's grammar check) are in
-[`docs/architecture-diagram.md`](docs/architecture-diagram.md). The full
-technical spec — every scoring formula, every Firestore schema, and the
-build-by-build record of what was found and fixed — is in
-[`.agents-cli-spec.md`](.agents-cli-spec.md).
-
-```mermaid
-flowchart LR
-    Browser["Browser (React SPA)"] --> CloudRun["Cloud Run<br/>FastAPI + ADK agent runtime"]
-    CloudRun --> Firestore[("Firestore")]
-    CloudRun --> Vertex["Vertex AI (Gemini 3.6 Flash)"]
-    CloudRun --> AIStudio["Google AI Studio (Gemma 4)"]
-```
-
-## Project layout
-
-```
-agent/
-  app/
-    sub_agents/            # orchestrator_agent + the college-research pipeline (see docs/architecture-diagram.md)
-    tools/                 # firestore_tools.py, scoring.py (deterministic formulas)
-    api.py                 # REST routes, mounted at /api
-    fast_api_app.py        # ADK app + REST routes + bundled frontend, one Cloud Run service
-  tests/
-    unit/  integration/    # pytest — code correctness, not agent behavior
-    eval/                  # agents-cli eval — agent behavior, LLM-judged
-  scripts/build_frontend.sh  # builds frontend/, stages it for the Docker build
-  Dockerfile
-frontend/
-  src/
-    pages/  components/  lib/api.ts
-docs/
-  architecture-diagram.md
-.agents-cli-spec.md         # full technical spec + build-by-build findings log
-```
-
-## Setup
-
-Written for someone who has never used GCP or ADK before.
+Reproducible, from-source instructions — useful to confirm the app is real
+and actually runs, not just a hosted demo. Written for someone who has never
+used GCP or ADK before.
 
 ### Prerequisites
 
@@ -157,6 +96,74 @@ Open the URL Vite prints (typically `http://localhost:5173`) — its dev
 server proxies `/api/*` to the backend on port 8000, so both need to be
 running.
 
+## How it works
+
+A student names the colleges they're applying to (natural language, or a
+short list). `orchestrator_agent` parses that into a clean list and hands the
+real work to a multi-stage pipeline as a single tool call, every requested
+college researched concurrently:
+
+1. **Identify** which named colleges are new vs. already tracked, resolving
+   casual input (e.g. "MIT") to the full college name.
+2. **Research** each new college from official sources (`google_search`,
+   admissions/financial-aid pages preferred over secondary sources) —
+   a fast branding/deadlines pass and a broader, slower requirements pass run
+   concurrently for each college.
+3. **Extract** structured, sourced requirements from the broader pass — with
+   a confidence-checking refinement loop that does one targeted follow-up
+   search when a finding is uncertain, rather than guessing.
+4. **Plan tasks** from the full requirement set, categorized by type (essay,
+   testing, recommendations, ...) so they can be filtered.
+5. **Score priority** for every task and **score readiness** for every
+   college — both via a deterministic algorithm in code, with Gemini adding
+   a plain-language explanation on top.
+6. **Detect conflicts** across colleges (recommendation policy differences,
+   deadline clustering, ...) and **match** the student's existing essays
+   against new prompts — concurrently, since neither depends on the other.
+   Essay matching is plain deterministic Python (keyword-bucket
+   categorization), not an LLM call.
+
+Nothing here is invented: a requirement with no source, or a low-confidence
+extraction, is surfaced as "needs verification," never guessed. Agents never
+submit an application, submit an essay, or mark something "Complete" from
+inference alone without a human approval step.
+
+The Essay Editor (a grammar/spelling checker on the Essays page) is the one
+place a Gemma model runs — Gemma takes a fast first pass, then Gemini 3.6
+Flash always does its own independent check regardless of what Gemma finds.
+
+Full architecture diagrams (system + full agent pipeline + essay matching +
+the Essay Editor's grammar check) are in
+[`docs/architecture-diagram.md`](docs/architecture-diagram.md). The full
+technical spec — every scoring formula, every Firestore schema, and the
+build-by-build record of what was found and fixed — is in
+[`.agents-cli-spec.md`](.agents-cli-spec.md).
+
+![System / deployment diagram](docs/assets/architecture-01-deployment.png)
+
+## Project layout
+
+```
+agent/
+  app/
+    sub_agents/            # orchestrator_agent + the college-research pipeline (see docs/architecture-diagram.md)
+    tools/                 # firestore_tools.py, scoring.py (deterministic formulas)
+    api.py                 # REST routes, mounted at /api
+    fast_api_app.py        # ADK app + REST routes + bundled frontend, one Cloud Run service
+  tests/
+    unit/  integration/    # pytest — code correctness, not agent behavior
+    eval/                  # agents-cli eval — agent behavior, LLM-judged
+  scripts/build_frontend.sh  # builds frontend/, stages it for the Docker build
+  Dockerfile
+frontend/
+  src/
+    pages/  components/  lib/api.ts
+docs/
+  architecture-diagram.md
+  assets/                  # blueprint-style architecture diagram images
+.agents-cli-spec.md         # full technical spec + build-by-build findings log
+```
+
 ## Tests
 
 ```bash
@@ -180,7 +187,17 @@ for the exact reproduction commands and why this suite captures traces via
 ## Deployment
 
 The frontend is bundled into the same Cloud Run service as the backend — one
-image, one URL, no separate frontend host. `agents-cli deploy` builds from
+image, one URL, no separate frontend host.
+
+The hosted instance above deploys itself: [`cloudbuild.yaml`](cloudbuild.yaml)
+is wired to a Cloud Build trigger that rebuilds and redeploys the
+`collegentic-git` service on every push to `main`, staging `frontend/` into
+`agent/frontend_dist` before building `agent/Dockerfile` (the build context
+Cloud Build's own console-generated trigger assumes is a root-level
+Dockerfile, which this repo — `frontend/` and `agent/` as siblings — doesn't
+have).
+
+To deploy your own copy manually instead, `agents-cli deploy` builds from
 `agent/`, which doesn't see `frontend/` as a sibling directory, so build the
 frontend first:
 
