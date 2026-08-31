@@ -18,7 +18,7 @@ and overlapping essay prompts with zero wait.
 > The hosted instance may take a few minutes to load when you first run it as the Cloud Run service may scale down when it isn't being used.
 > Additionally, the platform may run a little slower than a local build, as I capped
 > `max-instances` at 3 to control costs and reduce the risk of going over budget.
-> Thanks for understanding!
+> Thanks for your understanding!
 
 ## Run it Locally
 
