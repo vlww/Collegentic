@@ -3,11 +3,6 @@
 frontend/dist
 npm-debug.log*
 
-# Frontend build copied into the Cloud Run image for Milestone 17's
-# bundled deploy (agent/scripts/build_frontend.sh) — regenerated, not
-# committed, same as frontend/dist above. The directory itself (via
-# .gitkeep) stays tracked so `COPY ./frontend_dist` in the Dockerfile has
-# something to copy even before the build script has ever run.
 agent/frontend_dist/*
 !agent/frontend_dist/.gitkeep
 
@@ -18,12 +13,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Regenerable eval output (agents-cli eval generate/grade,
-# tests/eval/capture_traces.py) — the reusable input dataset lives in
-# agent/tests/eval/datasets/ instead, which IS committed.
+# Regenerable eval output
 agent/artifacts/
 
-# Environments — never commit secrets
+# Environments
 .env
 .env.local
 !.env.example
